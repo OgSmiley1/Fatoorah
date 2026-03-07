@@ -20,6 +20,7 @@ db.exec(`
     whatsapp TEXT,
     email TEXT,
     instagram_handle TEXT,
+    github_url TEXT,
     tiktok_handle TEXT,
     telegram_handle TEXT,
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

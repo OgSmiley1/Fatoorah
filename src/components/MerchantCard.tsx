@@ -3,7 +3,7 @@ import { Merchant } from '../types';
 import { 
   Mail, Phone, MessageCircle, Shield, TrendingUp, 
   Copy, CheckCircle2, Loader2, 
-  Globe, Zap, 
+  Globe, Zap, Github,
   Send, Instagram, Save
 } from 'lucide-react';
 import { telegramService } from '../services/telegramService';
@@ -33,6 +33,36 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   const [showScripts, setShowScripts] = React.useState(false);
   const [copied, setCopied] = React.useState<string | null>(null);
   const [tgSending, setTgSending] = React.useState(false);
+  const [ghUpdates, setGhUpdates] = React.useState<any[]>([]);
+  const [loadingGh, setLoadingGh] = React.useState(false);
+
+  React.useEffect(() => {
+    if (merchant.githubUrl) {
+      fetchGithubUpdates();
+    }
+  }, [merchant.githubUrl]);
+
+  const fetchGithubUpdates = async () => {
+    if (!merchant.githubUrl) return;
+    setLoadingGh(true);
+    try {
+      // Extract owner/repo from https://github.com/owner/repo
+      const parts = merchant.githubUrl.replace('https://github.com/', '').split('/');
+      if (parts.length >= 2) {
+        const owner = parts[0];
+        const repo = parts[1];
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=3`);
+        if (response.ok) {
+          const data = await response.json();
+          setGhUpdates(data);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch GitHub updates:', error);
+    } finally {
+      setLoadingGh(false);
+    }
+  };
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -105,6 +135,17 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               <span className="flex items-center gap-1">
                 <Globe size={12} className="text-blue-400" /> {merchant.location}
               </span>
+              {merchant.githubUrl && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Github size={12} className="text-slate-300" />
+                    <a href={merchant.githubUrl} target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">
+                      GitHub
+                    </a>
+                  </span>
+                </>
+              )}
             </div>
           </div>
           
@@ -204,6 +245,37 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   <Globe size={10} /> {source.title}
                 </a>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* GitHub Updates */}
+        {merchant.githubUrl && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="mission-control-label flex items-center gap-1.5">
+                <Github size={12} className="text-slate-400" /> GitHub Intelligence
+              </h4>
+              {loadingGh && <Loader2 size={10} className="animate-spin text-slate-500" />}
+            </div>
+            <div className="bg-slate-950/50 rounded-xl border border-slate-800/50 p-3 space-y-2">
+              {ghUpdates.length > 0 ? (
+                ghUpdates.map((commit, i) => (
+                  <div key={i} className="flex flex-col gap-0.5 border-b border-slate-800/30 last:border-0 pb-2 last:pb-0">
+                    <p className="text-[10px] text-slate-300 line-clamp-1 font-mono">
+                      {commit.commit.message}
+                    </p>
+                    <div className="flex items-center justify-between text-[8px] text-slate-500 uppercase tracking-tighter">
+                      <span>{commit.commit.author.name}</span>
+                      <span>{new Date(commit.commit.author.date).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-[10px] text-slate-500 italic">
+                  {loadingGh ? "Fetching latest commits..." : "No recent public activity found."}
+                </p>
+              )}
             </div>
           </div>
         )}

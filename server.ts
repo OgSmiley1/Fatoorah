@@ -1,5 +1,8 @@
 import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
+import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
@@ -13,6 +16,55 @@ async function startServer() {
   const app = express();
   app.use(express.json());
   app.use(cookieParser());
+  
+  app.use(session({
+    secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: true,
+      sameSite: 'none',
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000
+    }
+  }));
+
+  const httpServer = createServer(app);
+  const io = new Server(httpServer, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+  });
+
+  const huntRequests = new Map<string, number>();
+
+  io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
+    
+    socket.on('hunt-finished', async (data: any) => {
+      const { merchants, query } = data;
+      const chatId = huntRequests.get(query);
+      if (chatId) {
+        const newLeads = merchants.filter((m: any) => m.status === 'NEW');
+        if (newLeads.length === 0) {
+          await sendTelegram(chatId, `⚠️ No new merchants found for "${query}".`);
+        } else {
+          await sendTelegram(chatId, `🎯 FOUND ${newLeads.length} NEW LEADS FOR "${query}":`);
+          for (const m of newLeads) {
+            const msg = `
+🏢 *${m.businessName}*
+📂 Category: ${m.category}
+📱 IG: @${m.instagramHandle || 'N/A'}
+⭐ Fit Score: ${m.fitScore}/100
+📞 Phone: ${m.phone || 'N/A'}
+💬 WhatsApp: ${m.whatsapp || 'N/A'}
+🔗 [View Source](${m.url})
+            `.trim();
+            await sendTelegram(chatId, msg, 'Markdown');
+          }
+        }
+        huntRequests.delete(query);
+      }
+    });
+  });
 
   const PORT = 3000;
 
@@ -21,12 +73,22 @@ async function startServer() {
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
   // Discovery Search
-  // netNewOnly defaults to true: duplicate merchants (existing DB + current run duplicates)
-  // are excluded from merchants[] and only reflected in excludedDuplicates.
   app.post("/api/search", async (req, res) => {
-    const { keywords, location, maxResults, netNewOnly = true } = req.body;
+    const { keywords, location, maxResults } = req.body;
     try {
-      const result = await huntMerchants({ keywords, location, maxResults, netNewOnly });
+      const result = await huntMerchants({ keywords, location, maxResults });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Ingestion
+  app.post("/api/merchants/ingest", async (req, res) => {
+    const { merchants, query, location } = req.body;
+    try {
+      const { ingestMerchants } = await import("./discovery");
+      const result = await ingestMerchants({ merchants, query, location });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -124,6 +186,7 @@ async function startServer() {
             }
 
             await sendTelegram(chatId, `🧙‍♂️ SMILEY WIZARD: Starting server-side hunt for "${query}"...`);
+            io.emit('hunt-started', { query });
             
             try {
               // Split query into keywords and location if possible, or just use as keywords
@@ -132,6 +195,8 @@ async function startServer() {
               const keywords = parts.join(' ');
               
               const result = await huntMerchants({ keywords, location: location || 'Dubai' });
+              
+              io.emit('hunt-completed', { query, merchants: result.merchants });
 
               if (result.newLeadsCount === 0) {
                 await sendTelegram(chatId, `⚠️ No new merchants found for "${query}".`);
@@ -276,7 +341,7 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile("dist/index.html", { root: "." }));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

@@ -70,6 +70,7 @@ export interface Merchant {
   platform: string;
   url: string;
   instagramHandle?: string;
+  githubUrl?: string;
   category: string;
   subCategory?: string;
   followers: number;

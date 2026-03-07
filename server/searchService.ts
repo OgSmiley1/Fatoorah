@@ -9,12 +9,10 @@ interface SearchParams {
   keywords: string;
   location: string;
   maxResults?: number;
-  netNewOnly?: boolean;
-  searchClient?: typeof search;
 }
 
 export async function huntMerchants(params: SearchParams) {
-  const { keywords, location, maxResults = 10, netNewOnly = true, searchClient = search } = params;
+  const { keywords, location, maxResults = 10 } = params;
   const runId = uuidv4();
   
   logger.info('hunt_started', { runId, keywords, location });
@@ -22,60 +20,21 @@ export async function huntMerchants(params: SearchParams) {
   try {
     // Strategy 1: Social Media focus
     const socialQuery = `${keywords} ${location} site:instagram.com OR site:facebook.com OR site:tiktok.com`;
-    const socialResults = await searchClient(socialQuery, { safeSearch: 0 });
+    const socialResults = await search(socialQuery, { safeSearch: 0 });
     
     // Strategy 2: Directory/Web focus
     const webQuery = `${keywords} ${location} "contact us" OR "whatsapp" OR "order now"`;
-    const webResults = await searchClient(webQuery, { safeSearch: 0 });
+    const webResults = await search(webQuery, { safeSearch: 0 });
 
-    const allResults = [...socialResults.results, ...webResults.results];
+    // Strategy 3: GitHub/Tech focus (for "updated github updates")
+    const githubQuery = `${keywords} ${location} site:github.com`;
+    const githubResults = await search(githubQuery, { safeSearch: 0 });
+
+    const allResults = [...socialResults.results, ...webResults.results, ...githubResults.results];
     const uniqueResults = Array.from(new Map(allResults.map(r => [r.url, r])).values());
 
     const discoveredMerchants = [];
-    const currentRunSeen = new Set<string>();
     let newLeadsCount = 0;
-    let excludedDuplicates = 0;
-
-    const markCurrentRun = (merchant: {
-      businessName: string;
-      phone: string | null;
-      email: string | null;
-      instagramHandle: string | null;
-      url: string;
-    }) => {
-      const normalizedName = normalizeName(merchant.businessName);
-      const normalizedPhone = merchant.phone?.trim();
-      const normalizedEmail = merchant.email?.toLowerCase().trim();
-      const normalizedHandle = merchant.instagramHandle?.toLowerCase().replace('@', '').trim();
-
-      currentRunSeen.add(`name:${normalizedName}`);
-      currentRunSeen.add(`url:${merchant.url}`);
-
-      if (normalizedPhone) currentRunSeen.add(`phone:${normalizedPhone}`);
-      if (normalizedEmail) currentRunSeen.add(`email:${normalizedEmail}`);
-      if (normalizedHandle) currentRunSeen.add(`ig:${normalizedHandle}`);
-    };
-
-    const isCurrentRunDuplicate = (merchant: {
-      businessName: string;
-      phone: string | null;
-      email: string | null;
-      instagramHandle: string | null;
-      url: string;
-    }) => {
-      const normalizedName = normalizeName(merchant.businessName);
-      const normalizedPhone = merchant.phone?.trim();
-      const normalizedEmail = merchant.email?.toLowerCase().trim();
-      const normalizedHandle = merchant.instagramHandle?.toLowerCase().replace('@', '').trim();
-
-      if (currentRunSeen.has(`name:${normalizedName}`)) return true;
-      if (currentRunSeen.has(`url:${merchant.url}`)) return true;
-      if (normalizedPhone && currentRunSeen.has(`phone:${normalizedPhone}`)) return true;
-      if (normalizedEmail && currentRunSeen.has(`email:${normalizedEmail}`)) return true;
-      if (normalizedHandle && currentRunSeen.has(`ig:${normalizedHandle}`)) return true;
-
-      return false;
-    };
 
     for (const result of uniqueResults.slice(0, maxResults * 2)) {
       // Basic extraction from snippet/title
@@ -93,12 +52,23 @@ export async function huntMerchants(params: SearchParams) {
       else if (result.url.includes('facebook.com')) platform = 'facebook';
       else if (result.url.includes('tiktok.com')) platform = 'tiktok';
       else if (result.url.includes('t.me')) platform = 'telegram';
+      else if (result.url.includes('github.com')) platform = 'github';
 
       // Extract IG handle if possible
       let instagramHandle = null;
       if (platform === 'instagram') {
         const match = result.url.match(/instagram\.com\/([^\/\?]+)/);
         if (match) instagramHandle = match[1];
+      }
+
+      // Extract GitHub URL if possible
+      let githubUrl = null;
+      if (platform === 'github') {
+        githubUrl = result.url;
+      } else {
+        // Look for github link in snippet
+        const ghMatch = snippet.match(/github\.com\/([^\/\s\)]+)/);
+        if (ghMatch) githubUrl = `https://github.com/${ghMatch[1]}`;
       }
 
       // Extract phone/whatsapp from snippet
@@ -109,42 +79,21 @@ export async function huntMerchants(params: SearchParams) {
       const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
       const email = emailMatch ? emailMatch[1] : null;
 
-      const merchantData = {
-        businessName,
-        platform,
-        url: result.url,
-        instagramHandle,
-        phone,
-        whatsapp: phone, // Assume phone is whatsapp for now
-        email,
-        category: keywords.split(' ')[0],
-        evidence: [snippet]
-      };
-
-      if (isCurrentRunDuplicate(merchantData)) {
-        excludedDuplicates++;
-        if (!netNewOnly) {
-          discoveredMerchants.push({ ...merchantData, status: 'DUPLICATE', duplicateReason: 'current_run' });
-        }
-        continue;
-      }
+        const merchantData = {
+          businessName,
+          platform,
+          url: result.url,
+          instagramHandle,
+          githubUrl,
+          phone,
+          whatsapp: phone, // Assume phone is whatsapp for now
+          email,
+          category: keywords.split(' ')[0],
+          evidence: [snippet]
+        };
 
       const dupCheck = checkDuplicate(merchantData);
       
-      if (dupCheck.isDuplicate) {
-        excludedDuplicates++;
-        if (!netNewOnly) {
-          discoveredMerchants.push({
-            ...merchantData,
-            status: 'DUPLICATE',
-            duplicateReason: dupCheck.reason,
-            existingMerchantId: dupCheck.existingMerchantId
-          });
-        }
-        markCurrentRun(merchantData);
-        continue;
-      }
-
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
         const fitScore = computeFitScore(platform, 0);
@@ -155,9 +104,9 @@ export async function huntMerchants(params: SearchParams) {
         db.prepare(`
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url,
-            phone, whatsapp, email, instagram_handle, category,
+            phone, whatsapp, email, instagram_handle, github_url, category,
             confidence_score, contactability_score, myfatoorah_fit_score, evidence_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId,
           businessName,
@@ -168,6 +117,7 @@ export async function huntMerchants(params: SearchParams) {
           phone,
           email,
           instagramHandle,
+          githubUrl,
           merchantData.category,
           confidenceScore,
           contactScore,
@@ -180,11 +130,10 @@ export async function huntMerchants(params: SearchParams) {
         db.prepare(`
           INSERT INTO leads (id, merchant_id, run_id, status)
           VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId);
+        `).run(leadId, merchantId, runId, 'NEW');
 
         newLeadsCount++;
         discoveredMerchants.push({ ...merchantData, id: merchantId, status: 'NEW' });
-        markCurrentRun(merchantData);
       }
     }
 
@@ -195,7 +144,7 @@ export async function huntMerchants(params: SearchParams) {
     `).run(runId, `${keywords} ${location}`, 'duckduckgo', uniqueResults.length, newLeadsCount, 'COMPLETED');
 
     logger.info('hunt_completed', { runId, newLeadsCount });
-    return { runId, merchants: discoveredMerchants, newLeadsCount, excludedDuplicates };
+    return { runId, merchants: discoveredMerchants, newLeadsCount };
 
   } catch (error: any) {
     logger.error('hunt_failed', { runId, error: error.message });

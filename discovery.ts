@@ -29,6 +29,7 @@ export async function ingestMerchants(params: {
     for (const raw of params.merchants) {
       const normalizedName = normalizeName(raw.businessName);
       const igHandle = (raw.instagramHandle || "").toLowerCase().trim();
+      const githubUrl = (raw.githubUrl || "").toLowerCase().trim();
       
       // Deduplication Logic
       const dupCheck = checkDuplicate(raw);
@@ -37,7 +38,7 @@ export async function ingestMerchants(params: {
       let existingId = dupCheck.existingMerchantId;
 
       // Check against current run
-      if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)))) {
+      if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)) || (githubUrl && seenInRun.has(githubUrl)))) {
         isDuplicate = true;
         duplicateReason = "Duplicate in current search run";
       }
@@ -45,6 +46,7 @@ export async function ingestMerchants(params: {
       // Mark as seen
       seenInRun.add(normalizedName);
       if (igHandle) seenInRun.add(igHandle);
+      if (githubUrl) seenInRun.add(githubUrl);
 
       // Scoring Logic
       const contactScore = computeContactScore(raw);
@@ -60,13 +62,13 @@ export async function ingestMerchants(params: {
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url, 
             category, subcategory, country, city, website, phone, whatsapp, 
-            email, instagram_handle, confidence_score, contactability_score, 
+            email, instagram_handle, github_url, confidence_score, contactability_score, 
             myfatoorah_fit_score, evidence_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, raw.businessName, normalizedName, raw.platform, raw.url,
           raw.category, raw.subcategory, params.location, raw.location, raw.website,
-          raw.phone, raw.whatsapp, raw.email, raw.instagramHandle,
+          raw.phone, raw.whatsapp, raw.email, raw.instagramHandle, raw.githubUrl,
           confidenceScore, contactScore, fitScore, JSON.stringify(raw.evidence || [])
         );
 
