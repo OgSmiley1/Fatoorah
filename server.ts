@@ -41,7 +41,7 @@ async function startServer() {
     const { keywords, location, maxResults, includeOld } = req.body;
     try {
       const result = await runDiscovery({ keywords, location, maxResults, includeOld });
-      res.json(result);
+      res.json({ run: result.run, merchants: result.merchants });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -143,6 +143,8 @@ async function startServer() {
               const result = await runDiscovery({ keywords: query, location: "UAE", maxResults: 5 });
               const newLeads = result.merchants.filter(m => m.status === 'NEW');
               
+              await sendTelegram(chatId, `🧾 Run ${result.run.runId}: ${result.run.totalCandidates} candidates, ${result.run.newLeads} new, ${result.run.duplicates} duplicates.`);
+
               if (newLeads.length === 0) {
                 await sendTelegram(chatId, `⚠️ No new merchants found for "${query}". All candidates were already in the database.`);
               } else {
