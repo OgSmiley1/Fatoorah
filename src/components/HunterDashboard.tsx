@@ -2,8 +2,7 @@ import React from 'react';
 import { 
   Search, MapPin, Filter, Loader2, Download, Save, Shield, 
   History, Trash2, LayoutGrid, List, ChevronRight, Zap,
-  Globe, Tag, AlertCircle, CheckCircle2, X, TrendingUp, Send,
-  Github
+  Globe, Tag, AlertCircle, CheckCircle2, X, TrendingUp, Send
 } from 'lucide-react';
 import { Merchant, SearchParams, SearchHistory } from '../types';
 import { geminiService } from '../services/geminiService';
@@ -11,7 +10,6 @@ import { storageService } from '../services/storageService';
 import { MerchantCard } from './MerchantCard';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
-import { GitHubRepoCreator } from './GitHubRepoCreator';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -23,6 +21,33 @@ function cn(...inputs: ClassValue[]) {
 }
 
 import { useSearchHistory } from '../hooks/useSearchHistory';
+
+
+const getMerchantIdentity = (merchant: Partial<Merchant>): string => {
+  return [
+    merchant.id,
+    merchant.merchantHash,
+    merchant.url,
+    merchant.instagramHandle,
+    merchant.businessName?.toLowerCase().trim(),
+  ]
+    .filter(Boolean)
+    .join('|');
+};
+
+const mergeUniqueMerchants = (incoming: Merchant[], existing: Merchant[]): Merchant[] => {
+  const seen = new Set(existing.map(getMerchantIdentity).filter(Boolean));
+  const newUnique: Merchant[] = [];
+
+  for (const merchant of incoming) {
+    const identity = getMerchantIdentity(merchant);
+    if (!identity || seen.has(identity)) continue;
+    seen.add(identity);
+    newUnique.push(merchant);
+  }
+
+  return [...newUnique, ...existing];
+};
 
 export const HunterDashboard: React.FC = () => {
   const [params, setParams] = React.useState<SearchParams>({
@@ -77,7 +102,6 @@ export const HunterDashboard: React.FC = () => {
   const [exclusionCount, setExclusionCount] = React.useState(0);
   const [showFilters, setShowFilters] = React.useState(true);
   const [showTelegram, setShowTelegram] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'hunt' | 'github'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const socketRef = React.useRef<Socket | null>(null);
   
@@ -137,11 +161,7 @@ export const HunterDashboard: React.FC = () => {
         const results = await geminiService.searchMerchants(remoteParams);
         
         // Update UI
-        setMerchants(prev => {
-          const existingIds = new Set(prev.map(m => m.id));
-          const newUnique = results.filter(r => !existingIds.has(r.id));
-          return [...newUnique, ...prev];
-        });
+        setMerchants(prev => mergeUniqueMerchants(results, prev));
 
         // Send results back to Telegram via server
         socket.emit('hunt-results', {
@@ -196,11 +216,7 @@ export const HunterDashboard: React.FC = () => {
         setTimeout(() => setTgStatus('idle'), 3000);
       }
 
-      setMerchants(prev => {
-        const existingIds = new Set(prev.map(m => m.id));
-        const newUnique = results.filter(r => !existingIds.has(r.id));
-        return [...newUnique, ...prev];
-      });
+      setMerchants(prev => mergeUniqueMerchants(results, prev));
       refreshStats();
     } catch (e) {
       console.error("Search failed:", e);
@@ -468,31 +484,7 @@ export const HunterDashboard: React.FC = () => {
         {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-slate-950 p-6">
           <div className="max-w-[1200px] mx-auto space-y-6">
-            {/* Navigation Tabs */}
-            <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 mb-6 w-fit">
-              <button 
-                onClick={() => setActiveTab('hunt')}
-                className={cn(
-                  "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
-                  activeTab === 'hunt' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                Lead Hunter
-              </button>
-              <button 
-                onClick={() => setActiveTab('github')}
-                className={cn(
-                  "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2",
-                  activeTab === 'github' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                <Github className="w-3 h-3" /> GitHub Export
-              </button>
-            </div>
-
-            {activeTab === 'hunt' ? (
-              <>
-                {/* Global Search Bar */}
+            {/* Global Search Bar */}
             <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
               <div className="flex flex-col md:flex-row gap-3">
                 <div className="flex-1 relative">
@@ -599,9 +591,9 @@ export const HunterDashboard: React.FC = () => {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
                 <AnimatePresence mode="popLayout">
-                  {merchants.map((merchant) => (
+                  {merchants.map((merchant, index) => (
                     <MerchantCard
-                      key={merchant.id}
+                      key={`${getMerchantIdentity(merchant) || 'merchant'}-${index}`}
                       merchant={merchant}
                       onSave={handleSaveLead}
                       isSaved={savedLeads.some(l => l.id === merchant.id)}
@@ -637,12 +629,6 @@ export const HunterDashboard: React.FC = () => {
                 ))}
               </div>
             )}
-          </>
-        ) : (
-          <div className="max-w-2xl">
-            <GitHubRepoCreator />
-          </div>
-        )}
       </div>
     </main>
   </div>

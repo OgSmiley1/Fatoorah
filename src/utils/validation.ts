@@ -1,5 +1,13 @@
 import { KYCPreFlight, Merchant } from '../types';
 
+const BUSINESS_EMAIL_PATTERNS = [
+  /@gmail\.com$/i,
+  /@yahoo\.com$/i,
+  /@hotmail\.com$/i,
+  /@outlook\.com$/i,
+  /@icloud\.com$/i,
+];
+
 export const validateKYC = (merchant: Partial<Merchant>): KYCPreFlight => {
   const missingItems: string[] = [];
   const advice: string[] = [];
@@ -68,9 +76,21 @@ export const validateKYC = (merchant: Partial<Merchant>): KYCPreFlight => {
 };
 
 export const validateContacts = (merchant: Partial<Merchant>) => {
+  const phone = (merchant.phone || '').trim();
+  const whatsapp = (merchant.whatsapp || '').trim();
+  const email = (merchant.email || '').trim();
+  const website = (merchant.website || '').trim();
   const sources = merchant.contactValidation?.sources || [];
-  
-  if (sources.length >= 2) return 'VERIFIED';
-  if (sources.length === 1) return 'UNVERIFIED';
+
+  const validPhone = /^\+?[0-9\s\-()]{8,18}$/.test(phone) && !/not publicly available/i.test(phone);
+  const validWhatsApp = /^\+?[0-9\s\-()]{8,18}$/.test(whatsapp);
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const businessEmail = validEmail && !BUSINESS_EMAIL_PATTERNS.some((pattern) => pattern.test(email));
+  const validWebsite = /^https?:\/\//i.test(website) || /\.[a-z]{2,}$/i.test(website);
+
+  const score = [validPhone, validWhatsApp, validWebsite].filter(Boolean).length + (businessEmail ? 2 : validEmail ? 1 : 0);
+
+  if (score >= 4 && sources.length > 0) return 'VERIFIED';
+  if (score >= 2) return 'UNVERIFIED';
   return 'DISCREPANCY';
 };

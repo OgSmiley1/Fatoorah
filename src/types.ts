@@ -45,6 +45,7 @@ export interface Merchant {
   platform: string;
   url: string;
   instagramHandle?: string;
+  tiktokHandle?: string;
   category: string;
   subCategory?: string;
   followers: number;
