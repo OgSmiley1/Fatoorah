@@ -84,18 +84,6 @@ async function startServer() {
   });
 
   // Ingestion
-  app.post("/api/merchants/ingest", async (req, res) => {
-    const { merchants, query, location } = req.body;
-    try {
-      const { ingestMerchants } = await import("./discovery");
-      const result = await ingestMerchants({ merchants, query, location });
-      res.json(result);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // Leads Management
   app.get("/api/leads", (req, res) => {
     const { status } = req.query;
     let query = `

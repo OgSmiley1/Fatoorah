@@ -11,11 +11,28 @@ interface SearchParams {
   maxResults?: number;
 }
 
+interface MerchantCandidate {
+  businessName: string;
+  platform: string;
+  url: string;
+  instagramHandle: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  email: string | null;
+  category: string;
+  evidence: string[];
+}
+
 export async function huntMerchants(params: SearchParams) {
   const { keywords, location, maxResults = 10 } = params;
   const runId = uuidv4();
+  const query = `${keywords} ${location}`;
   
   logger.info('hunt_started', { runId, keywords, location });
+  db.prepare(`
+    INSERT INTO search_runs (id, query, source, status)
+    VALUES (?, ?, ?, ?)
+  `).run(runId, query, 'duckduckgo', 'PENDING');
 
   try {
     // Strategy 1: Social Media focus
@@ -29,8 +46,7 @@ export async function huntMerchants(params: SearchParams) {
     const allResults = [...socialResults.results, ...webResults.results];
     const uniqueResults = Array.from(new Map(allResults.map(r => [r.url, r])).values());
 
-    const discoveredMerchants = [];
-    let newLeadsCount = 0;
+    const discoveredMerchants: MerchantCandidate[] = [];
 
     for (const result of uniqueResults.slice(0, maxResults * 2)) {
       // Basic extraction from snippet/title
@@ -76,65 +92,160 @@ export async function huntMerchants(params: SearchParams) {
         evidence: [snippet]
       };
 
-      const dupCheck = checkDuplicate(merchantData);
-      
-      if (!dupCheck.isDuplicate) {
-        const merchantId = uuidv4();
-        const fitScore = computeFitScore(platform, 0);
-        const contactScore = computeContactScore(merchantData);
-        const confidenceScore = computeConfidence(merchantData);
-
-        // Save merchant
-        db.prepare(`
-          INSERT INTO merchants (
-            id, business_name, normalized_name, source_platform, source_url,
-            phone, whatsapp, email, instagram_handle, category,
-            confidence_score, contactability_score, myfatoorah_fit_score, evidence_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          merchantId,
-          businessName,
-          normalizeName(businessName),
-          platform,
-          result.url,
-          phone,
-          phone,
-          email,
-          instagramHandle,
-          merchantData.category,
-          confidenceScore,
-          contactScore,
-          fitScore,
-          JSON.stringify([snippet])
-        );
-
-        // Create lead
-        const leadId = uuidv4();
-        db.prepare(`
-          INSERT INTO leads (id, merchant_id, run_id, status)
-          VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId, 'NEW');
-
-        newLeadsCount++;
-        discoveredMerchants.push({ ...merchantData, id: merchantId, status: 'NEW' });
-      }
+      discoveredMerchants.push(merchantData);
     }
 
-    // Record search run
+    const { merchants, newLeadsCount } = ingestMerchants({
+      merchants: discoveredMerchants,
+      query,
+      location,
+      runId
+    });
+
     db.prepare(`
-      INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, 'duckduckgo', uniqueResults.length, newLeadsCount, 'COMPLETED');
+      UPDATE search_runs
+      SET results_count = ?, new_leads_count = ?, status = ?
+      WHERE id = ?
+    `).run(uniqueResults.length, newLeadsCount, 'COMPLETED', runId);
 
     logger.info('hunt_completed', { runId, newLeadsCount });
-    return { runId, merchants: discoveredMerchants, newLeadsCount };
+    return { runId, merchants, newLeadsCount };
 
   } catch (error: any) {
     logger.error('hunt_failed', { runId, error: error.message });
     db.prepare(`
-      INSERT INTO search_runs (id, query, source, status, error_message)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, 'duckduckgo', 'FAILED', error.message);
+      UPDATE search_runs
+      SET status = ?, error_message = ?
+      WHERE id = ?
+    `).run('FAILED', error.message, runId);
     throw error;
   }
+}
+
+function ingestMerchants(params: {
+  merchants: MerchantCandidate[];
+  query: string;
+  location: string;
+  runId: string;
+}) {
+  const processedMerchants: any[] = [];
+  let newLeadsCount = 0;
+  const seenInRun = new Set<string>();
+
+  for (const raw of params.merchants) {
+    const normalizedName = normalizeName(raw.businessName);
+    const igHandle = (raw.instagramHandle || '').toLowerCase().trim();
+
+    const dupCheck = checkDuplicate(raw);
+    let isDuplicate = dupCheck.isDuplicate;
+    let duplicateReason = dupCheck.reason;
+    const existingId = dupCheck.existingMerchantId;
+
+    if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)))) {
+      isDuplicate = true;
+      duplicateReason = 'Duplicate in current search run';
+    }
+
+    seenInRun.add(normalizedName);
+    if (igHandle) seenInRun.add(igHandle);
+
+    const contactScore = computeContactScore(raw);
+    const fitScore = computeFitScore(raw.platform || 'website', 0);
+    const confidenceScore = computeConfidence(raw);
+    const risk = calculateRiskAssessment(raw);
+    const scripts = generateScripts(raw);
+    const merchantId = isDuplicate ? existingId : uuidv4();
+
+    if (!isDuplicate) {
+      db.prepare(`
+        INSERT INTO merchants (
+          id, business_name, normalized_name, source_platform, source_url,
+          category, country, phone, whatsapp, email, instagram_handle,
+          confidence_score, contactability_score, myfatoorah_fit_score, evidence_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        merchantId,
+        raw.businessName,
+        normalizedName,
+        raw.platform,
+        raw.url,
+        raw.category,
+        params.location,
+        raw.phone,
+        raw.whatsapp,
+        raw.email,
+        raw.instagramHandle,
+        confidenceScore,
+        contactScore,
+        fitScore,
+        JSON.stringify(raw.evidence || [])
+      );
+
+      db.prepare(`
+        INSERT INTO leads (id, merchant_id, status, run_id)
+        VALUES (?, ?, ?, ?)
+      `).run(uuidv4(), merchantId, 'NEW', params.runId);
+
+      newLeadsCount++;
+      processedMerchants.push({
+        ...raw,
+        id: merchantId,
+        status: 'NEW',
+        contactScore,
+        fitScore,
+        confidenceScore,
+        risk,
+        scripts
+      });
+    } else {
+      processedMerchants.push({
+        ...raw,
+        id: merchantId || uuidv4(),
+        status: 'DUPLICATE',
+        duplicateReason,
+        contactScore,
+        fitScore,
+        confidenceScore,
+        risk,
+        scripts
+      });
+    }
+  }
+
+  return { merchants: processedMerchants, newLeadsCount };
+}
+
+function calculateRiskAssessment(m: MerchantCandidate) {
+  let score = 20;
+  const factors = ['New discovery'];
+
+  if (!m.phone && !m.email) {
+    score += 40;
+    factors.push('Limited contact info');
+  }
+
+  let category: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+  let emoji = '🛡️';
+  let color = 'emerald';
+
+  if (score > 60) {
+    category = 'HIGH';
+    emoji = '⚠️';
+    color = 'rose';
+  } else if (score > 30) {
+    category = 'MEDIUM';
+    emoji = '⚖️';
+    color = 'amber';
+  }
+
+  return { score, category, emoji, color, factors };
+}
+
+function generateScripts(m: MerchantCandidate) {
+  return {
+    arabic: `مرحباً ${m.businessName}، لاحظنا متجركم المميز ونود عرض حلول MyFatoorah لتسهيل الدفع لعملائكم.`,
+    english: `Hi ${m.businessName}, we love your products! MyFatoorah can help you accept online payments easily via WhatsApp and Instagram.`,
+    whatsapp: `Hello! I'm from MyFatoorah. We help businesses like ${m.businessName} accept payments online.`,
+    instagram: 'Love your feed! Have you considered adding a direct payment link to your bio?'
+  };
 }
