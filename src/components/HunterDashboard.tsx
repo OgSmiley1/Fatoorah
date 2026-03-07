@@ -11,7 +11,6 @@ import { PipelineView } from './PipelineView';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
 import { telegramService } from '../services/telegramService';
-import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -77,7 +76,6 @@ export const HunterDashboard: React.FC = () => {
   const [showTelegram, setShowTelegram] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
-  const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
 
@@ -97,31 +95,6 @@ export const HunterDashboard: React.FC = () => {
 
   React.useEffect(() => {
     refreshStats();
-  }, []);
-
-  // Socket.io initialization
-  React.useEffect(() => {
-    const socket = io();
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('Connected to server socket');
-    });
-
-    socket.on('hunt-started', (data: any) => {
-      setLoading(true);
-      setParams(prev => ({ ...prev, keywords: data.query }));
-    });
-
-    socket.on('hunt-completed', (data: any) => {
-      setLoading(false);
-      setMerchants(data.merchants);
-      refreshStats();
-    });
-
-    return () => {
-      socket.disconnect();
-    };
   }, []);
 
   const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
@@ -150,12 +123,6 @@ export const HunterDashboard: React.FC = () => {
       
       refreshStats();
       
-      if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', { 
-          merchants: results, 
-          query: searchKeywords 
-        });
-      }
     } catch (e) {
       console.error("Search failed:", e);
       setTgStatus('error');
