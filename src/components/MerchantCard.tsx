@@ -99,7 +99,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">
-                <Instagram size={12} className="text-pink-500" /> {merchant.instagramHandle || '@' + merchant.businessName.toLowerCase().replace(/\s/g, '')}
+                <Instagram size={12} className="text-pink-500" /> {merchant.instagramHandle || '@' + (merchant.businessName || 'merchant').toLowerCase().replace(/\s/g, '')}
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
@@ -111,11 +111,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           <div className="flex flex-col items-end gap-1">
             <div className={cn(
               "px-3 py-1.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 border uppercase tracking-widest",
-              merchant.risk.category === 'LOW' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
-              merchant.risk.category === 'MEDIUM' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+              merchant.risk?.category === 'LOW' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+              merchant.risk?.category === 'MEDIUM' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
               "bg-red-500/10 text-red-400 border-red-500/20"
             )}>
-              {merchant.risk.emoji} {merchant.risk.category} RISK
+              {merchant.risk?.emoji || '🛡️'} {merchant.risk?.category || 'LOW'} RISK
             </div>
             {merchant.duplicateReason && (
               <span className="text-[8px] text-slate-500 font-bold uppercase">{merchant.duplicateReason}</span>
@@ -271,23 +271,23 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <h5 className="mission-control-label">WhatsApp (Arabic)</h5>
-                    <button onClick={() => copyToClipboard(merchant.scripts.arabic, 'ar')} className="text-blue-400 hover:text-blue-300">
+                    <button onClick={() => copyToClipboard(merchant.scripts?.arabic || '', 'ar')} className="text-blue-400 hover:text-blue-300">
                       {copied === 'ar' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed text-right font-arabic" dir="rtl">
-                    {merchant.scripts.arabic}
+                    {merchant.scripts?.arabic || 'No script available.'}
                   </p>
                 </div>
                 <div className="pt-4 border-t border-slate-800">
                   <div className="flex justify-between items-center mb-2">
                     <h5 className="mission-control-label">WhatsApp (English)</h5>
-                    <button onClick={() => copyToClipboard(merchant.scripts.english, 'en')} className="text-blue-400 hover:text-blue-300">
+                    <button onClick={() => copyToClipboard(merchant.scripts?.english || '', 'en')} className="text-blue-400 hover:text-blue-300">
                       {copied === 'en' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    {merchant.scripts.english}
+                    {merchant.scripts?.english || 'No script available.'}
                   </p>
                 </div>
               </div>

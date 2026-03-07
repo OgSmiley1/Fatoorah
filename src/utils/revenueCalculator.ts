@@ -15,13 +15,13 @@ export const calculateRevenueLeakage = (merchant: Partial<Merchant>) => {
   const currentMethods = merchant.paymentMethods || [];
   const missingMethods: string[] = [];
   
-  if (!currentMethods.some(m => m.toLowerCase().includes('tabby') || m.toLowerCase().includes('tamara'))) {
+  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('tabby') || m.toLowerCase().includes('tamara')))) {
     missingMethods.push('BNPL (Tabby/Tamara)');
   }
-  if (!currentMethods.some(m => m.toLowerCase().includes('apple') || m.toLowerCase().includes('google'))) {
+  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('apple') || m.toLowerCase().includes('google')))) {
     missingMethods.push('Digital Wallets (Apple Pay)');
   }
-  if (!currentMethods.some(m => m.toLowerCase().includes('card') || m.toLowerCase().includes('visa'))) {
+  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('card') || m.toLowerCase().includes('visa')))) {
     missingMethods.push('Credit Cards');
   }
 

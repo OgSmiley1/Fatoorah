@@ -35,7 +35,7 @@ export const HunterDashboard: React.FC = () => {
       tiktok: true,
       website: true,
     },
-    maxResults: 50,
+    maxResults: 10,
   });
 
   const [subInput, setSubInput] = React.useState('');
@@ -124,24 +124,38 @@ export const HunterDashboard: React.FC = () => {
     };
   }, []);
 
-  const handleSearch = async () => {
-    if (!params.keywords) return;
+  const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
+
+  const handleSearch = async (overrideKeywords?: string) => {
+    const searchKeywords = overrideKeywords || params.keywords;
+    if (!searchKeywords) return;
     
     setLoading(true);
     try {
-      const results = await geminiService.searchMerchants(params);
+      const searchParams = overrideKeywords 
+        ? { ...params, keywords: overrideKeywords }
+        : params;
+
+      const results = await geminiService.searchMerchants(searchParams);
       setMerchants(results);
       
       // Save to history
       saveSearch({
         sessionId: Math.random().toString(36).substr(2, 9),
-        query: params.keywords,
+        query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
         resultsCount: results.length
       });
       
       refreshStats();
+      
+      if (socketRef.current) {
+        socketRef.current.emit('hunt-finished', { 
+          merchants: results, 
+          query: searchKeywords 
+        });
+      }
     } catch (e) {
       console.error("Search failed:", e);
       setTgStatus('error');
@@ -150,6 +164,10 @@ export const HunterDashboard: React.FC = () => {
       setLoading(false);
     }
   };
+
+  React.useEffect(() => {
+    handleSearchRef.current = handleSearch;
+  }, [handleSearch]);
 
   const handleSaveLead = async (merchant: Merchant) => {
     try {
@@ -421,7 +439,7 @@ export const HunterDashboard: React.FC = () => {
                   />
                 </div>
                 <button
-                  onClick={handleSearch}
+                  onClick={() => handleSearch()}
                   disabled={loading}
                   className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
                 >

@@ -15,15 +15,15 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
     'Fit Score': m.fitScore || 0,
     'Contact Score': m.contactScore || 0,
     'Confidence Score': m.confidenceScore || 0,
-    'Risk Category': m.risk.category,
-    'Setup Fee Min (AED)': m.pricing.setupFee,
-    'Setup Fee Max (AED)': m.pricing.setupFee + 1000,
-    'Transaction Rate (%)': m.pricing.transactionRate,
-    'Settlement Cycle': m.pricing.settlementCycle,
+    'Risk Category': m.risk?.category || 'N/A',
+    'Setup Fee Min (AED)': m.pricing?.setupFee || 0,
+    'Setup Fee Max (AED)': (m.pricing?.setupFee || 0) + 1000,
+    'Transaction Rate (%)': m.pricing?.transactionRate || 'N/A',
+    'Settlement Cycle': m.pricing?.settlementCycle || 'N/A',
     'Payment Methods Detected': (m.paymentMethods || []).join(', '),
     'Contact Validation Status': m.contactValidation?.status || 'N/A',
     'Data Sources': (m.contactValidation?.sources || []).join(', '),
-    'First Found Date': new Date(m.foundDate).toLocaleDateString('en-GB'),
+    'First Found Date': m.foundDate ? new Date(m.foundDate).toLocaleDateString('en-GB') : 'N/A',
     'Direct Profile Link': m.url
   }));
 

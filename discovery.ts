@@ -1,108 +1,60 @@
-import { GoogleGenAI } from "@google/genai";
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
+import { checkDuplicate, normalizeName } from "./server/dedupService";
+import { computeFitScore, computeContactScore, computeConfidence } from "./server/scoringService";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-
-export interface DiscoveryResult {
+export interface IngestResult {
   merchants: any[];
   runId: string;
 }
 
-export async function runDiscovery(params: {
-  keywords: string;
+export async function ingestMerchants(params: {
+  merchants: any[];
+  query: string;
   location: string;
-  maxResults: number;
-  includeOld?: boolean;
-}): Promise<DiscoveryResult> {
+}): Promise<IngestResult> {
   const runId = uuidv4();
   
   // Log start
-  db.prepare('INSERT INTO search_runs (id, query, status) VALUES (?, ?, ?)').run(runId, params.keywords, 'pending');
-  db.prepare('INSERT INTO logs (event, details, run_id) VALUES (?, ?, ?)').run('SEARCH_STARTED', `Query: ${params.keywords}, Location: ${params.location}`, runId);
+  db.prepare('INSERT INTO search_runs (id, query, status) VALUES (?, ?, ?)').run(runId, params.query, 'pending');
+  db.prepare('INSERT INTO logs (event, details, run_id) VALUES (?, ?, ?)').run('INGESTION_STARTED', `Query: ${params.query}, Location: ${params.location}`, runId);
 
   try {
-    // 1. Get existing merchants for deduplication (hashes)
-    const existing = db.prepare('SELECT id, normalized_name, phone, email, instagram_handle FROM merchants').all() as any[];
-    const existingNames = new Set(existing.map(m => m.normalized_name.toLowerCase()));
-    const existingPhones = new Set(existing.map(m => m.phone).filter(Boolean));
-    const existingEmails = new Set(existing.map(m => m.email).filter(Boolean));
-    const existingIGs = new Set(existing.map(m => m.instagram_handle).filter(Boolean));
-
-    const prompt = `
-      # ROLE
-      You are SMILEY WIZARD — an elite merchant intelligence engine for MyFatoorah.
-      Find ${params.maxResults} REAL, VERIFIED e-commerce merchants in ${params.location} matching keywords: "${params.keywords}".
-      
-      # TARGET
-      Focus on merchants who sell via Instagram, TikTok, WhatsApp, or simple web stores.
-      Prioritize those likely needing payment links or online checkout.
-      
-      # CRITICAL RULES
-      1. NO FABRICATION: Only return real businesses with verifiable presence.
-      2. EVIDENCE: For each merchant, list the source URL or platform where they were found.
-      3. JSON ONLY: Return a JSON array of objects.
-      
-      For each merchant, provide:
-      - businessName
-      - platform (Instagram, TikTok, Web, etc.)
-      - url (source URL)
-      - instagramHandle
-      - category
-      - subcategory
-      - followers (number)
-      - bio
-      - email
-      - phone
-      - whatsapp
-      - website
-      - location (City, Country)
-      - evidence (list of sources)
-      - paymentFrictionSignals (e.g., "Uses COD only", "DM to order", "No checkout")
-    `;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json"
-      },
-    });
-
-    const rawMerchants = JSON.parse(response.text || "[]");
     const processedMerchants: any[] = [];
     let newLeadsCount = 0;
+    
+    // Track seen in current run to prevent duplicates within the same search
+    const seenInRun = new Set<string>();
 
-    for (const raw of rawMerchants) {
-      const normalizedName = raw.businessName.toLowerCase().trim();
+    for (const raw of params.merchants) {
+      const normalizedName = normalizeName(raw.businessName);
+      const igHandle = (raw.instagramHandle || "").toLowerCase().trim();
       
       // Deduplication Logic
-      let isDuplicate = false;
-      let duplicateReason = "";
+      const dupCheck = checkDuplicate(raw);
+      let isDuplicate = dupCheck.isDuplicate;
+      let duplicateReason = dupCheck.reason;
+      let existingId = dupCheck.existingMerchantId;
 
-      if (existingNames.has(normalizedName)) {
+      // Check against current run
+      if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)))) {
         isDuplicate = true;
-        duplicateReason = "Matched on business name";
-      } else if (raw.phone && existingPhones.has(raw.phone)) {
-        isDuplicate = true;
-        duplicateReason = "Matched on phone number";
-      } else if (raw.email && existingEmails.has(raw.email)) {
-        isDuplicate = true;
-        duplicateReason = "Matched on email";
-      } else if (raw.instagramHandle && existingIGs.has(raw.instagramHandle)) {
-        isDuplicate = true;
-        duplicateReason = "Matched on Instagram handle";
+        duplicateReason = "Duplicate in current search run";
       }
 
-      // Scoring Logic
-      const contactScore = calculateContactScore(raw);
-      const fitScore = calculateFitScore(raw);
-      const confidenceScore = calculateConfidenceScore(raw);
+      // Mark as seen
+      seenInRun.add(normalizedName);
+      if (igHandle) seenInRun.add(igHandle);
 
-      const merchantId = uuidv4();
+      // Scoring Logic
+      const contactScore = computeContactScore(raw);
+      const fitScore = computeFitScore(raw.platform || 'website', 0);
+      const confidenceScore = computeConfidence(raw);
+      const risk = calculateRiskAssessment(raw);
+      const scripts = generateScripts(raw);
+
+      const merchantId = isDuplicate ? existingId : uuidv4();
       
-      // Save Merchant if not duplicate or if we want to track it anyway (but mark as duplicate)
       if (!isDuplicate) {
         db.prepare(`
           INSERT INTO merchants (
@@ -124,63 +76,102 @@ export async function runDiscovery(params: {
         `).run(uuidv4(), merchantId, 'NEW', runId);
         
         newLeadsCount++;
-        processedMerchants.push({ ...raw, id: merchantId, status: 'NEW', contactScore, fitScore, confidenceScore });
+        processedMerchants.push({ 
+          ...raw, 
+          id: merchantId, 
+          status: 'NEW', 
+          contactScore, 
+          fitScore, 
+          confidenceScore,
+          risk,
+          scripts,
+          revenue: raw.revenue || { monthly: 0, annual: 0 },
+          pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
+          roi: raw.roi || { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
+          contactValidation: raw.contactValidation || { status: 'UNVERIFIED', sources: [] },
+          paymentMethods: raw.paymentMethods || [],
+          otherProfiles: raw.otherProfiles || [],
+          foundDate: raw.foundDate || new Date().toISOString(),
+          analyzedAt: new Date().toISOString()
+        });
       } else {
         db.prepare('INSERT INTO logs (level, event, details, run_id) VALUES (?, ?, ?, ?)')
           .run('DEBUG', 'DUPLICATE_EXCLUDED', `Merchant: ${raw.businessName}, Reason: ${duplicateReason}`, runId);
         
-        if (params.includeOld) {
-          processedMerchants.push({ ...raw, status: 'DUPLICATE', duplicateReason });
-        }
+        processedMerchants.push({ 
+          ...raw, 
+          id: merchantId || uuidv4(), // Ensure unique ID even for duplicates
+          status: 'DUPLICATE', 
+          duplicateReason,
+          risk,
+          scripts,
+          revenue: raw.revenue || { monthly: 0, annual: 0 },
+          pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
+          roi: raw.roi || { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
+          contactValidation: raw.contactValidation || { status: 'UNVERIFIED', sources: [] },
+          paymentMethods: raw.paymentMethods || [],
+          otherProfiles: raw.otherProfiles || [],
+          foundDate: raw.foundDate || new Date().toISOString(),
+          analyzedAt: new Date().toISOString()
+        });
       }
     }
 
     // Update run status
     db.prepare('UPDATE search_runs SET status = ?, results_count = ?, new_leads_count = ? WHERE id = ?')
-      .run('completed', rawMerchants.length, newLeadsCount, runId);
+      .run('completed', params.merchants.length, newLeadsCount, runId);
     
     db.prepare('INSERT INTO logs (event, details, run_id) VALUES (?, ?, ?)')
-      .run('SEARCH_COMPLETED', `Found ${rawMerchants.length} total, ${newLeadsCount} new leads.`, runId);
+      .run('INGESTION_COMPLETED', `Processed ${params.merchants.length} total, ${newLeadsCount} new leads.`, runId);
 
     return { merchants: processedMerchants, runId };
 
   } catch (error: any) {
-    console.error("Discovery Error:", error);
+    console.error("Ingestion Error:", error);
     db.prepare('UPDATE search_runs SET status = ?, error_message = ? WHERE id = ?')
       .run('failed', error.message, runId);
     db.prepare('INSERT INTO logs (level, event, details, run_id) VALUES (?, ?, ?, ?)')
-      .run('ERROR', 'SEARCH_FAILED', error.message, runId);
+      .run('ERROR', 'INGESTION_FAILED', error.message, runId);
     throw error;
   }
 }
 
-function calculateContactScore(m: any): number {
-  let score = 0;
-  if (m.phone) score += 30;
-  if (m.whatsapp) score += 20;
-  if (m.email) score += 25;
-  if (m.instagramHandle) score += 15;
-  if (m.website) score += 10;
-  return score;
+function calculateRiskAssessment(m: any) {
+  let score = 20;
+  const factors = ["New discovery"];
+  
+  if (!m.phone && !m.email) {
+    score += 40;
+    factors.push("Limited contact info");
+  }
+  
+  if (!m.website) {
+    score += 20;
+    factors.push("No official website");
+  }
+
+  let category: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+  let emoji = '🛡️';
+  let color = 'emerald';
+
+  if (score > 60) {
+    category = 'HIGH';
+    emoji = '⚠️';
+    color = 'rose';
+  } else if (score > 30) {
+    category = 'MEDIUM';
+    emoji = '⚖️';
+    color = 'amber';
+  }
+
+  return { score, category, emoji, color, factors };
 }
 
-function calculateFitScore(m: any): number {
-  let score = 50; // Base score
-  const signals = (m.paymentFrictionSignals || "").toLowerCase();
-  if (signals.includes("cod") || signals.includes("cash")) score += 20;
-  if (signals.includes("dm") || signals.includes("direct message")) score += 15;
-  if (signals.includes("no checkout") || signals.includes("no payment")) score += 15;
-  
-  const category = (m.category || "").toLowerCase();
-  if (['fashion', 'retail', 'electronics', 'food', 'beauty'].includes(category)) score += 10;
-  
-  return Math.min(score, 100);
-}
-
-function calculateConfidenceScore(m: any): number {
-  let score = 0;
-  if (m.url) score += 40;
-  if (m.evidence && m.evidence.length > 0) score += 30;
-  if (m.phone || m.email) score += 30;
-  return score;
+function generateScripts(m: any) {
+  return {
+    arabic: `مرحباً ${m.businessName}، لاحظنا متجركم المميز ونود عرض حلول MyFatoorah لتسهيل الدفع لعملائكم.`,
+    english: `Hi ${m.businessName}, we love your products! MyFatoorah can help you accept online payments easily via WhatsApp and Instagram.`,
+    whatsapp: `Hello! I'm from MyFatoorah. We help businesses like ${m.businessName} accept payments online.`,
+    instagram: `Love your feed! Have you considered adding a direct payment link to your bio?`
+  };
 }

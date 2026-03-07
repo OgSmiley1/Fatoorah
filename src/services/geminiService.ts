@@ -1,23 +1,26 @@
-import { Merchant, SearchParams, Lead } from "../types";
+import { Merchant, SearchParams } from "../types";
 
 export const geminiService = {
   async searchMerchants(params: SearchParams): Promise<Merchant[]> {
     try {
-      const response = await fetch('/api/hunt', {
+      const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
+        body: JSON.stringify({ 
+          keywords: params.keywords,
+          location: params.location,
+          maxResults: params.maxResults
+        })
       });
-      
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Search failed');
+        throw new Error('Failed to search merchants');
       }
-      
+
       const result = await response.json();
       return result.merchants;
     } catch (error) {
-      console.error("Search error in geminiService:", error);
+      console.error("Search error:", error);
       throw error;
     }
   },
@@ -38,6 +41,13 @@ export const geminiService = {
 
   async getStats(): Promise<any> {
     const response = await fetch('/api/stats');
-    return response.json();
+    const data = await response.json();
+    return {
+      totalMerchants: data.total_merchants.count,
+      totalLeads: data.total_leads.count,
+      newLeads: data.new_leads.count,
+      onboarded: data.onboarded.count,
+      recentRuns: data.recent_runs
+    };
   }
 };
