@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+merchants.db
+merchants.db-shm
+merchants.db-wal

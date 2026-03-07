@@ -1,15 +1,11 @@
-import { Merchant } from '../types';
-
 export const telegramService = {
-  async sendMessage(token: string, chatId: string, merchant: Merchant): Promise<boolean> {
+  async sendMessage(token: string, chatId: string, merchant: any): Promise<boolean> {
     const message = this.formatMerchantMessage(merchant);
-    
+
     try {
       const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
           text: message,
@@ -22,7 +18,6 @@ export const telegramService = {
         console.error('Telegram API Error:', errorData);
         return false;
       }
-
       return true;
     } catch (error) {
       console.error('Failed to send Telegram message:', error);
@@ -30,7 +25,7 @@ export const telegramService = {
     }
   },
 
-  async sendBulkMessages(token: string, chatId: string, merchants: Merchant[]): Promise<{ success: number; failed: number }> {
+  async sendBulkMessages(token: string, chatId: string, merchants: any[]): Promise<{ success: number; failed: number }> {
     let success = 0;
     let failed = 0;
 
@@ -38,33 +33,40 @@ export const telegramService = {
       const ok = await this.sendMessage(token, chatId, merchant);
       if (ok) success++;
       else failed++;
-      
-      // Small delay to avoid rate limits
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     return { success, failed };
   },
 
-  formatMerchantMessage(m: Merchant): string {
+  formatMerchantMessage(m: any): string {
+    const name = m.businessName || m.business_name || 'Unknown';
+    const handle = m.instagramHandle || m.instagram_handle || 'N/A';
+    const followers = (m.followers || 0).toLocaleString();
+    const leakageLoss = m.leakage?.estimatedMonthlyLoss ?? m.leakage_monthly_loss ?? 0;
+    const riskCategory = m.risk?.category ?? m.risk_category ?? 'N/A';
+    const missingMethods: string[] = m.leakage?.missingMethods || (() => {
+      try { return JSON.parse(m.leakage_missing_methods || '[]'); } catch { return []; }
+    })();
+    const script = m.scripts?.english ?? m.scripts_english ?? '';
+
     return `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
-📱 IG: @${m.instagramHandle || 'N/A'}
-👥 Followers: ${m.followers.toLocaleString()}
-💰 Est. Monthly Loss: ${m.leakage.estimatedMonthlyLoss} AED
-⚠️ Risk: ${m.risk.category}
+🏢 *${name}*
+📂 Category: ${m.category || 'N/A'}
+📱 IG: @${handle}
+👥 Followers: ${followers}
+💰 Est. Monthly Loss: ${leakageLoss} AED
+⚠️ Risk: ${riskCategory}
 
 📉 *REVENUE LEAKAGE:*
-${m.leakage.missingMethods.map((method: string) => `• Missing ${method}`).join('\n')}
-🚀 Solution: ${m.leakage.solution}
+${missingMethods.map((method: string) => `• Missing ${method}`).join('\n')}
 
-💬 *SUPREME OUTREACH SCRIPT (EN):*
+💬 *OUTREACH SCRIPT (EN):*
 \`\`\`
-${m.scripts.english}
+${script}
 \`\`\`
 
-🔗 [View Profile](${m.url})
+🔗 [View Profile](${m.url || '#'})
     `.trim();
   },
 
@@ -72,13 +74,12 @@ ${m.scripts.english}
     try {
       const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
       if (!response.ok) return false;
-      
+
       const chatResponse = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId })
       });
-      
       return chatResponse.ok;
     } catch {
       return false;

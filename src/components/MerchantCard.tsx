@@ -16,8 +16,8 @@ function cn(...inputs: ClassValue[]) {
 }
 
 interface MerchantCardProps {
-  merchant: Merchant;
-  onSave?: (merchant: Merchant) => void;
+  merchant: any;
+  onSave?: (merchant: any) => void;
   isSaved?: boolean;
 }
 

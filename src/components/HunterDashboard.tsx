@@ -93,9 +93,9 @@ export const HunterDashboard: React.FC = () => {
     refreshStats();
   }, []);
 
-  const refreshStats = () => {
-    const list = storageService.getExclusionList();
-    setExclusionCount(list.names.length);
+  const refreshStats = async () => {
+    const count = await storageService.getExclusionCount();
+    setExclusionCount(count);
     refreshHistory();
   };
 
@@ -132,11 +132,11 @@ export const HunterDashboard: React.FC = () => {
       setLoading(true);
       try {
         const results = await geminiService.searchMerchants(remoteParams);
-        
+
         // Update UI
         setMerchants(prev => {
           const existingIds = new Set(prev.map(m => m.id));
-          const newUnique = results.filter(r => !existingIds.has(r.id));
+          const newUnique = results.merchants.filter(r => !existingIds.has(r.id));
           return [...newUnique, ...prev];
         });
 
@@ -144,7 +144,7 @@ export const HunterDashboard: React.FC = () => {
         socket.emit('hunt-results', {
           chatId: data.chatId,
           query: data.query,
-          merchants: results
+          merchants: results.merchants
         });
 
         refreshHistory();
@@ -182,12 +182,12 @@ export const HunterDashboard: React.FC = () => {
       const tgChatId = localStorage.getItem('sw_tg_chatid');
       const tgAutoSend = localStorage.getItem('sw_tg_autosend') === 'true';
 
-      if (tgAutoSend && tgToken && tgChatId && results.length > 0 && socketRef.current) {
+      if (tgAutoSend && tgToken && tgChatId && results.merchants.length > 0 && socketRef.current) {
         setTgStatus('sending');
         socketRef.current.emit('hunt-results', {
           chatId: tgChatId,
           query: params.keywords,
-          merchants: results
+          merchants: results.merchants
         });
         setTgStatus('success');
         setTimeout(() => setTgStatus('idle'), 3000);
@@ -195,7 +195,7 @@ export const HunterDashboard: React.FC = () => {
 
       setMerchants(prev => {
         const existingIds = new Set(prev.map(m => m.id));
-        const newUnique = results.filter(r => !existingIds.has(r.id));
+        const newUnique = results.merchants.filter(r => !existingIds.has(r.id));
         return [...newUnique, ...prev];
       });
       refreshStats();

@@ -1,4 +1,5 @@
 import { SearchParams, SearchResult } from '../types';
+import { enrichMerchant } from '../utils/enrichMerchant';
 
 // Thin API client - all search logic runs on the backend
 export const geminiService = {
@@ -14,6 +15,9 @@ export const geminiService = {
       throw new Error(error.detail || error.error || 'Search failed');
     }
 
-    return response.json();
+    const data: SearchResult = await response.json();
+    // Enrich flat DB rows with nested properties for frontend components
+    data.merchants = data.merchants.map(enrichMerchant);
+    return data;
   }
 };

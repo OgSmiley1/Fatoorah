@@ -1,4 +1,5 @@
-import { Merchant, DashboardStats } from '../types';
+import { Merchant, DashboardStats, SearchHistory } from '../types';
+import { enrichMerchant } from '../utils/enrichMerchant';
 
 // API-backed storage service - replaces localStorage
 export const storageService = {
@@ -9,7 +10,7 @@ export const storageService = {
     }
     const response = await fetch(`/api/merchants?${params}`);
     const data = await response.json();
-    return data.merchants || [];
+    return (data.merchants || []).map(enrichMerchant);
   },
 
   async updateStatus(id: string, status: string, notes?: string): Promise<boolean> {
@@ -49,9 +50,32 @@ export const storageService = {
     return response.json();
   },
 
-  // Kept for backward compatibility - returns count from backend
   async getExclusionCount(): Promise<number> {
     const stats = await this.getStats();
     return stats.total;
+  },
+
+  getSearchHistory(): SearchHistory[] {
+    try {
+      const raw = localStorage.getItem('sw_search_history');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveSearch(search: Omit<SearchHistory, 'id' | 'date'>): void {
+    const history = this.getSearchHistory();
+    const entry: SearchHistory = {
+      ...search,
+      id: `sh_${Date.now()}`,
+      date: new Date().toISOString(),
+    };
+    history.unshift(entry);
+    localStorage.setItem('sw_search_history', JSON.stringify(history.slice(0, 20)));
+  },
+
+  clearHistory(): void {
+    localStorage.setItem('sw_search_history', '[]');
   },
 };
