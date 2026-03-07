@@ -5,7 +5,7 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
   const data = merchants.map((m) => ({
     'Business Name': m.businessName,
     'Category': m.category || 'N/A',
-    'Sub-Category': m.subCategory || 'N/A',
+    'Sub-Category': m.subcategory || 'N/A',
     'Website URL': m.website || 'N/A',
     'Instagram Handle': m.instagramHandle || 'N/A',
     'Email': m.email || 'N/A',

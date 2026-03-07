@@ -34,10 +34,10 @@ export const PipelineView: React.FC = () => {
     fetchLeads();
   }, [filter]);
 
-  const handleStatusChange = async (id: string, newStatus: LeadStatus) => {
+  const handleStatusChange = async (leadId: string, newStatus: LeadStatus) => {
     try {
-      await geminiService.updateLead(id, { status: newStatus });
-      setLeads(prev => prev.map(l => l.id === id ? { ...l, status: newStatus } : l));
+      await geminiService.updateLead(leadId, { status: newStatus });
+      setLeads(prev => prev.map(l => l.leadId === leadId ? { ...l, status: newStatus } : l));
     } catch (error) {
       console.error("Failed to update lead status:", error);
     }
@@ -99,7 +99,7 @@ export const PipelineView: React.FC = () => {
                 key={lead.id} 
                 merchant={lead} 
                 showStatus 
-                onStatusChange={handleStatusChange}
+                onStatusChange={(id, status) => handleStatusChange(id, status)}
               />
             ))}
           </AnimatePresence>

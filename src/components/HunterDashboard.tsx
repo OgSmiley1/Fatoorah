@@ -171,7 +171,7 @@ export const HunterDashboard: React.FC = () => {
 
   const handleSaveLead = async (merchant: Merchant) => {
     try {
-      await geminiService.updateLead(merchant.id, { status: 'NEW' });
+      await geminiService.updateLead(merchant.leadId || merchant.id, { status: 'NEW' });
       refreshStats();
     } catch (error) {
       console.error("Failed to save lead:", error);

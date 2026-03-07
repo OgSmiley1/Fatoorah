@@ -71,7 +71,7 @@ export interface Merchant {
   url: string;
   instagramHandle?: string;
   category: string;
-  subCategory?: string;
+  subcategory?: string;
   followers: number;
   bio: string;
   email: string;
@@ -116,7 +116,8 @@ export interface Merchant {
   fitScore?: number;
   confidenceScore?: number;
   duplicateReason?: string;
-  status?: string;
+  status?: LeadStatus;
+  leadId?: string;
 }
 
 export interface SearchParams {

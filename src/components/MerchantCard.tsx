@@ -1,9 +1,9 @@
 import React from 'react';
-import { Merchant } from '../types';
-import { 
-  Mail, Phone, MessageCircle, Shield, TrendingUp, 
-  Copy, CheckCircle2, Loader2, 
-  Globe, Zap, 
+import { Merchant, LeadStatus } from '../types';
+import {
+  Mail, Phone, MessageCircle,
+  Copy, CheckCircle2, Loader2,
+  Globe,
   Send, Instagram, Save
 } from 'lucide-react';
 import { telegramService } from '../services/telegramService';
@@ -20,12 +20,12 @@ interface MerchantCardProps {
   onSave?: (merchant: Merchant) => void;
   isSaved?: boolean;
   showStatus?: boolean;
-  onStatusChange?: (id: string, status: any) => void;
+  onStatusChange?: (leadId: string, status: LeadStatus) => void;
 }
 
-export const MerchantCard: React.FC<MerchantCardProps> = ({ 
-  merchant, 
-  onSave, 
+export const MerchantCard: React.FC<MerchantCardProps> = ({
+  merchant,
+  onSave,
   isSaved,
   showStatus,
   onStatusChange
@@ -43,7 +43,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   const handleSendTelegram = async () => {
     const token = localStorage.getItem('sw_tg_token');
     const chatId = localStorage.getItem('sw_tg_chatid');
-    
+
     if (!token || !chatId) {
       alert('Please configure Telegram in the dashboard first.');
       return;
@@ -52,7 +52,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
     setTgSending(true);
     const ok = await telegramService.sendMessage(token, chatId, merchant);
     setTgSending(false);
-    
+
     if (ok) {
       setCopied('tg');
       setTimeout(() => setCopied(null), 2000);
@@ -67,6 +67,8 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
     return "text-rose-400";
   };
 
+  const leadId = merchant.leadId || merchant.id;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -79,7 +81,6 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
       )}
     >
       <div className="p-6">
-        {/* Header */}
         <div className="flex justify-between items-start mb-6">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
@@ -107,7 +108,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </span>
             </div>
           </div>
-          
+
           <div className="flex flex-col items-end gap-1">
             <div className={cn(
               "px-3 py-1.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 border uppercase tracking-widest",
@@ -123,7 +124,6 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </div>
         </div>
 
-        {/* Qualification Scores */}
         <div className="grid grid-cols-3 gap-3 mb-6">
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50 text-center">
             <p className="mission-control-label mb-1">Fit Score</p>
@@ -145,7 +145,6 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </div>
         </div>
 
-        {/* Contact Details */}
         <div className="mb-6 space-y-2">
           <div className="flex items-center justify-between">
             <h4 className="mission-control-label">Contact Routes</h4>
@@ -188,16 +187,15 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </div>
         </div>
 
-        {/* Evidence */}
         {merchant.evidence && merchant.evidence.length > 0 && (
           <div className="mb-6">
             <h4 className="mission-control-label mb-2">Evidence Source</h4>
             <div className="flex flex-wrap gap-2">
               {merchant.evidence.map((source, i) => (
-                <a 
-                  key={i} 
-                  href={source.uri} 
-                  target="_blank" 
+                <a
+                  key={i}
+                  href={source.uri}
+                  target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-[9px] font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded-lg border border-blue-500/20 hover:bg-blue-500/20 transition-all"
                 >
@@ -208,12 +206,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </div>
         )}
 
-        {/* Action Buttons */}
         <div className="flex gap-2">
           {showStatus ? (
-            <select 
+            <select
               value={merchant.status}
-              onChange={(e) => onStatusChange?.(merchant.id, e.target.value)}
+              onChange={(e) => onStatusChange?.(leadId, e.target.value as LeadStatus)}
               className="flex-1 mission-control-input text-[10px] font-bold uppercase h-10"
             >
               <option value="NEW">New</option>
@@ -244,7 +241,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </button>
             </>
           )}
-          
+
           <button
             onClick={handleSendTelegram}
             disabled={tgSending}
@@ -253,12 +250,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               copied === 'tg' ? "bg-blue-500 text-white" : "mission-control-button-secondary"
             )}
           >
-            {tgSending ? <Loader2 className="animate-spin" size={16} /> : 
+            {tgSending ? <Loader2 className="animate-spin" size={16} /> :
              copied === 'tg' ? <CheckCircle2 size={16} /> : <Send size={16} />}
           </button>
         </div>
 
-        {/* Expandable Sections */}
         <AnimatePresence>
           {showScripts && (
             <motion.div

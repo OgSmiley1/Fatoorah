@@ -1,4 +1,6 @@
-import { Merchant, SearchParams } from "../types";
+import { Merchant, SearchParams, LeadStatus } from "../types";
+import { MerchantApiDto } from "../../shared/merchant";
+import { mapMerchantDtoToDomain } from "../mappers/merchant";
 
 export const geminiService = {
   async searchMerchants(params: SearchParams): Promise<Merchant[]> {
@@ -6,7 +8,7 @@ export const geminiService = {
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           keywords: params.keywords,
           location: params.location,
           maxResults: params.maxResults
@@ -17,18 +19,19 @@ export const geminiService = {
         throw new Error('Failed to search merchants');
       }
 
-      const result = await response.json();
-      return result.merchants;
+      const result = await response.json() as { merchants: MerchantApiDto[] };
+      return result.merchants.map(mapMerchantDtoToDomain);
     } catch (error) {
       console.error("Search error:", error);
       throw error;
     }
   },
 
-  async getLeads(status?: string): Promise<any[]> {
+  async getLeads(status?: LeadStatus): Promise<Merchant[]> {
     const url = status ? `/api/leads?status=${status}` : '/api/leads';
     const response = await fetch(url);
-    return response.json();
+    const data = await response.json() as MerchantApiDto[];
+    return data.map(mapMerchantDtoToDomain);
   },
 
   async updateLead(id: string, updates: any): Promise<void> {

@@ -4,6 +4,7 @@ import db from '../db';
 import { checkDuplicate, normalizeName } from './dedupService';
 import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
 import { logger } from './logger';
+import { mapSearchResultToMerchantDto } from '../shared/merchant';
 
 interface SearchParams {
   keywords: string;
@@ -116,7 +117,14 @@ export async function huntMerchants(params: SearchParams) {
         `).run(leadId, merchantId, runId, 'NEW');
 
         newLeadsCount++;
-        discoveredMerchants.push({ ...merchantData, id: merchantId, status: 'NEW' });
+        discoveredMerchants.push(mapSearchResultToMerchantDto({
+          ...merchantData,
+          id: merchantId,
+          status: 'NEW',
+          fitScore,
+          contactScore,
+          confidenceScore
+        }));
       }
     }
 

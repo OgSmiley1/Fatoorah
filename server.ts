@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from "uuid";
 import { huntMerchants } from "./server/searchService";
 import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
+import { mapDbRowToMerchantDto, MerchantLeadDbRow } from "./shared/merchant";
 
 async function startServer() {
   const app = express();
@@ -99,21 +100,51 @@ async function startServer() {
   app.get("/api/leads", (req, res) => {
     const { status } = req.query;
     let query = `
-      SELECT l.*, m.*, l.id as lead_id 
-      FROM leads l 
+      SELECT
+        l.id as lead_id,
+        l.status,
+        l.notes,
+        l.next_action,
+        l.follow_up_date,
+        l.first_contact_at,
+        l.last_contact_at,
+        l.outcome,
+        l.created_at,
+        l.updated_at,
+        m.id as merchant_id,
+        m.business_name,
+        m.normalized_name,
+        m.source_platform,
+        m.source_url,
+        m.category,
+        m.subcategory,
+        m.country,
+        m.city,
+        m.website,
+        m.phone,
+        m.whatsapp,
+        m.email,
+        m.instagram_handle,
+        m.tiktok_handle,
+        m.telegram_handle,
+        m.confidence_score,
+        m.contactability_score,
+        m.myfatoorah_fit_score,
+        m.evidence_json
+      FROM leads l
       JOIN merchants m ON l.merchant_id = m.id
     `;
-    const params: any[] = [];
-    
+    const params: string[] = [];
+
     if (status) {
       query += " WHERE l.status = ?";
-      params.push(status);
+      params.push(String(status));
     }
-    
+
     query += " ORDER BY l.created_at DESC";
-    
-    const leads = db.prepare(query).all(...params);
-    res.json(leads);
+
+    const leadRows = db.prepare(query).all(...params) as MerchantLeadDbRow[];
+    res.json(leadRows.map(mapDbRowToMerchantDto));
   });
 
   app.patch("/api/leads/:id", (req, res) => {
@@ -221,7 +252,7 @@ async function startServer() {
           } else if (text.startsWith('/export')) {
             const status = text.replace('/export', '').trim().toUpperCase() || 'NEW';
             const query = `
-              SELECT m.*, l.status as lead_status, l.created_at as lead_date
+              SELECT m.*, l.status, l.created_at as lead_date
               FROM leads l
               JOIN merchants m ON l.merchant_id = m.id
               WHERE l.status = ?
@@ -271,7 +302,7 @@ async function startServer() {
             await sendTelegram(chatId, `📊 *WIZARD STATUS*\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}`, 'Markdown');
           } else if (text === '/recent') {
             const query = `
-              SELECT m.*, l.status as lead_status
+              SELECT m.*, l.status
               FROM leads l
               JOIN merchants m ON l.merchant_id = m.id
               ORDER BY l.created_at DESC
@@ -283,7 +314,7 @@ async function startServer() {
             } else {
               await sendTelegram(chatId, "🕒 *RECENT LEADS:*", 'Markdown');
               for (const m of leads) {
-                const msg = `🏢 *${m.business_name}* (${m.lead_status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
+                const msg = `🏢 *${m.business_name}* (${m.status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
                 await sendTelegram(chatId, msg, 'Markdown');
               }
             }
