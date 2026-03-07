@@ -9,10 +9,12 @@ interface SearchParams {
   keywords: string;
   location: string;
   maxResults?: number;
+  netNewOnly?: boolean;
+  searchClient?: typeof search;
 }
 
 export async function huntMerchants(params: SearchParams) {
-  const { keywords, location, maxResults = 10 } = params;
+  const { keywords, location, maxResults = 10, netNewOnly = true, searchClient = search } = params;
   const runId = uuidv4();
   
   logger.info('hunt_started', { runId, keywords, location });
@@ -20,17 +22,60 @@ export async function huntMerchants(params: SearchParams) {
   try {
     // Strategy 1: Social Media focus
     const socialQuery = `${keywords} ${location} site:instagram.com OR site:facebook.com OR site:tiktok.com`;
-    const socialResults = await search(socialQuery, { safeSearch: 0 });
+    const socialResults = await searchClient(socialQuery, { safeSearch: 0 });
     
     // Strategy 2: Directory/Web focus
     const webQuery = `${keywords} ${location} "contact us" OR "whatsapp" OR "order now"`;
-    const webResults = await search(webQuery, { safeSearch: 0 });
+    const webResults = await searchClient(webQuery, { safeSearch: 0 });
 
     const allResults = [...socialResults.results, ...webResults.results];
     const uniqueResults = Array.from(new Map(allResults.map(r => [r.url, r])).values());
 
     const discoveredMerchants = [];
+    const currentRunSeen = new Set<string>();
     let newLeadsCount = 0;
+    let excludedDuplicates = 0;
+
+    const markCurrentRun = (merchant: {
+      businessName: string;
+      phone: string | null;
+      email: string | null;
+      instagramHandle: string | null;
+      url: string;
+    }) => {
+      const normalizedName = normalizeName(merchant.businessName);
+      const normalizedPhone = merchant.phone?.trim();
+      const normalizedEmail = merchant.email?.toLowerCase().trim();
+      const normalizedHandle = merchant.instagramHandle?.toLowerCase().replace('@', '').trim();
+
+      currentRunSeen.add(`name:${normalizedName}`);
+      currentRunSeen.add(`url:${merchant.url}`);
+
+      if (normalizedPhone) currentRunSeen.add(`phone:${normalizedPhone}`);
+      if (normalizedEmail) currentRunSeen.add(`email:${normalizedEmail}`);
+      if (normalizedHandle) currentRunSeen.add(`ig:${normalizedHandle}`);
+    };
+
+    const isCurrentRunDuplicate = (merchant: {
+      businessName: string;
+      phone: string | null;
+      email: string | null;
+      instagramHandle: string | null;
+      url: string;
+    }) => {
+      const normalizedName = normalizeName(merchant.businessName);
+      const normalizedPhone = merchant.phone?.trim();
+      const normalizedEmail = merchant.email?.toLowerCase().trim();
+      const normalizedHandle = merchant.instagramHandle?.toLowerCase().replace('@', '').trim();
+
+      if (currentRunSeen.has(`name:${normalizedName}`)) return true;
+      if (currentRunSeen.has(`url:${merchant.url}`)) return true;
+      if (normalizedPhone && currentRunSeen.has(`phone:${normalizedPhone}`)) return true;
+      if (normalizedEmail && currentRunSeen.has(`email:${normalizedEmail}`)) return true;
+      if (normalizedHandle && currentRunSeen.has(`ig:${normalizedHandle}`)) return true;
+
+      return false;
+    };
 
     for (const result of uniqueResults.slice(0, maxResults * 2)) {
       // Basic extraction from snippet/title
@@ -76,8 +121,30 @@ export async function huntMerchants(params: SearchParams) {
         evidence: [snippet]
       };
 
+      if (isCurrentRunDuplicate(merchantData)) {
+        excludedDuplicates++;
+        if (!netNewOnly) {
+          discoveredMerchants.push({ ...merchantData, status: 'DUPLICATE', duplicateReason: 'current_run' });
+        }
+        continue;
+      }
+
       const dupCheck = checkDuplicate(merchantData);
       
+      if (dupCheck.isDuplicate) {
+        excludedDuplicates++;
+        if (!netNewOnly) {
+          discoveredMerchants.push({
+            ...merchantData,
+            status: 'DUPLICATE',
+            duplicateReason: dupCheck.reason,
+            existingMerchantId: dupCheck.existingMerchantId
+          });
+        }
+        markCurrentRun(merchantData);
+        continue;
+      }
+
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
         const fitScore = computeFitScore(platform, 0);
@@ -113,10 +180,11 @@ export async function huntMerchants(params: SearchParams) {
         db.prepare(`
           INSERT INTO leads (id, merchant_id, run_id, status)
           VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId, 'NEW');
+        `).run(leadId, merchantId, runId);
 
         newLeadsCount++;
         discoveredMerchants.push({ ...merchantData, id: merchantId, status: 'NEW' });
+        markCurrentRun(merchantData);
       }
     }
 
@@ -127,7 +195,7 @@ export async function huntMerchants(params: SearchParams) {
     `).run(runId, `${keywords} ${location}`, 'duckduckgo', uniqueResults.length, newLeadsCount, 'COMPLETED');
 
     logger.info('hunt_completed', { runId, newLeadsCount });
-    return { runId, merchants: discoveredMerchants, newLeadsCount };
+    return { runId, merchants: discoveredMerchants, newLeadsCount, excludedDuplicates };
 
   } catch (error: any) {
     logger.error('hunt_failed', { runId, error: error.message });
