@@ -73,10 +73,12 @@ async function startServer() {
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
   // Discovery Search
+  // netNewOnly defaults to true: duplicate merchants (existing DB + current run duplicates)
+  // are excluded from merchants[] and only reflected in excludedDuplicates.
   app.post("/api/search", async (req, res) => {
-    const { keywords, location, maxResults } = req.body;
+    const { keywords, location, maxResults, netNewOnly = true } = req.body;
     try {
-      const result = await huntMerchants({ keywords, location, maxResults });
+      const result = await huntMerchants({ keywords, location, maxResults, netNewOnly });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
