@@ -11,7 +11,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const STATUSES: LeadStatus[] = ['NEW', 'CONTACTED', 'QUALIFIED', 'ONBOARDED', 'REJECTED', 'ARCHIVED'];
+const STATUSES: LeadStatus[] = ['NEW', 'CONTACTED', 'FOLLOW_UP', 'INTERESTED', 'MEETING', 'QUALIFIED', 'ONBOARDED', 'REJECTED', 'ARCHIVED'];
 
 export const PipelineView: React.FC = () => {
   const [leads, setLeads] = React.useState<Merchant[]>([]);

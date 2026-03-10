@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -74,12 +75,21 @@ async function startServer() {
 
   // Discovery Search
   app.post("/api/search", async (req, res) => {
-    const { keywords, location, maxResults } = req.body;
+    const { keywords, location, maxResults, categories, subCategories, platforms, minFollowers } = req.body;
+    if (!keywords || !keywords.trim()) {
+      return res.status(400).json({ error: "missing_keywords", message: "Keywords are required" });
+    }
     try {
-      const result = await huntMerchants({ keywords, location, maxResults });
+      const result = await huntMerchants({ keywords, location, maxResults, categories, subCategories, platforms, minFollowers });
       res.json(result);
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      const msg = error.message || 'Unknown error';
+      let errorType = 'search_failed';
+      if (msg.includes('timeout') || msg.includes('ETIMEDOUT')) errorType = 'source_timeout';
+      else if (msg.includes('rate') || msg.includes('429')) errorType = 'rate_limit_reached';
+      else if (msg.includes('parse') || msg.includes('JSON')) errorType = 'parsing_error';
+      logger.error('api.search.failed', { errorType, message: msg });
+      res.status(500).json({ error: errorType, message: msg });
     }
   });
 
@@ -178,117 +188,203 @@ async function startServer() {
           const text = message.text.trim();
           const chatId = message.chat.id;
 
+          // Helper to format merchant for Telegram
+          const fmtMerchant = (m: any) => `🏢 *${m.business_name || m.businessName}*
+📂 ${m.category || 'N/A'}
+📱 IG: @${m.instagram_handle || m.instagramHandle || 'N/A'}
+⭐ Fit: ${m.myfatoorah_fit_score || m.fitScore || 0}/100
+📞 ${m.phone || 'N/A'}
+💬 ${m.whatsapp || m.phone || 'N/A'}
+🔗 ${m.source_url || m.url || 'N/A'}`;
+
           if (text.startsWith('/hunt')) {
             const query = text.replace('/hunt', '').trim();
             if (!query) {
-              await sendTelegram(chatId, "❌ Please provide keywords. Example: /hunt Luxury Abayas Dubai");
+              await sendTelegram(chatId, "Usage: /hunt <keywords> [location]\nExample: /hunt Luxury Abayas Dubai");
               continue;
             }
 
-            await sendTelegram(chatId, `🧙‍♂️ SMILEY WIZARD: Starting server-side hunt for "${query}"...`);
+            await sendTelegram(chatId, `🧙‍♂️ Starting hunt for "${query}"...`);
             io.emit('hunt-started', { query });
-            
+
             try {
-              // Split query into keywords and location if possible, or just use as keywords
               const parts = query.split(' ');
               const location = parts.length > 1 ? parts.pop() : 'Dubai';
               const keywords = parts.join(' ');
-              
+
               const result = await huntMerchants({ keywords, location: location || 'Dubai' });
-              
               io.emit('hunt-completed', { query, merchants: result.merchants });
 
               if (result.newLeadsCount === 0) {
                 await sendTelegram(chatId, `⚠️ No new merchants found for "${query}".`);
               } else {
-                await sendTelegram(chatId, `🎯 FOUND ${result.newLeadsCount} NEW LEADS FOR "${query}":`);
-                for (const m of result.merchants) {
-                  const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
-📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${computeFitScore(m.platform, 0)}/100
-📞 Phone: ${m.phone || 'N/A'}
-💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
-                  `.trim();
-                  await sendTelegram(chatId, msg, 'Markdown');
+                await sendTelegram(chatId, `🎯 *${result.newLeadsCount} NEW LEADS* for "${query}":`, 'Markdown');
+                for (const m of result.merchants.filter((x: any) => x.status === 'NEW').slice(0, 10)) {
+                  await sendTelegram(chatId, fmtMerchant(m), 'Markdown');
+                }
+                if (result.newLeadsCount > 10) {
+                  await sendTelegram(chatId, `...and ${result.newLeadsCount - 10} more. Use /export to get all.`);
                 }
               }
             } catch (error: any) {
               await sendTelegram(chatId, `❌ Hunt failed: ${error.message}`);
             }
+
+          } else if (text === '/newonly') {
+            // Show only NEW leads
+            const leads = db.prepare(`
+              SELECT m.*, l.status as lead_status FROM leads l
+              JOIN merchants m ON l.merchant_id = m.id
+              WHERE l.status = 'NEW' ORDER BY l.created_at DESC LIMIT 10
+            `).all() as any[];
+            if (leads.length === 0) {
+              await sendTelegram(chatId, "📭 No new leads in database.");
+            } else {
+              await sendTelegram(chatId, `🆕 *${leads.length} NEW LEADS:*`, 'Markdown');
+              for (const m of leads) {
+                await sendTelegram(chatId, fmtMerchant(m), 'Markdown');
+              }
+            }
+
+          } else if (text === '/contactable') {
+            // Show leads with phone or email (contactable)
+            const leads = db.prepare(`
+              SELECT m.*, l.status as lead_status FROM leads l
+              JOIN merchants m ON l.merchant_id = m.id
+              WHERE (m.phone IS NOT NULL OR m.email IS NOT NULL)
+              ORDER BY m.contactability_score DESC LIMIT 10
+            `).all() as any[];
+            if (leads.length === 0) {
+              await sendTelegram(chatId, "📭 No contactable leads found.");
+            } else {
+              await sendTelegram(chatId, `📞 *TOP ${leads.length} CONTACTABLE LEADS:*`, 'Markdown');
+              for (const m of leads) {
+                await sendTelegram(chatId, fmtMerchant(m), 'Markdown');
+              }
+            }
+
+          } else if (text === '/highfit') {
+            // Show highest fit score leads
+            const leads = db.prepare(`
+              SELECT m.*, l.status as lead_status FROM leads l
+              JOIN merchants m ON l.merchant_id = m.id
+              WHERE l.status IN ('NEW', 'CONTACTED', 'FOLLOW_UP', 'INTERESTED')
+              ORDER BY m.myfatoorah_fit_score DESC LIMIT 10
+            `).all() as any[];
+            if (leads.length === 0) {
+              await sendTelegram(chatId, "📭 No high-fit leads found.");
+            } else {
+              await sendTelegram(chatId, `🔥 *TOP ${leads.length} HIGH-FIT LEADS:*`, 'Markdown');
+              for (const m of leads) {
+                await sendTelegram(chatId, fmtMerchant(m), 'Markdown');
+              }
+            }
+
+          } else if (text.startsWith('/save')) {
+            // Mark a lead as QUALIFIED
+            const merchantName = text.replace('/save', '').trim();
+            if (!merchantName) {
+              await sendTelegram(chatId, "Usage: /save <business name>\nMarks the lead as QUALIFIED.");
+              continue;
+            }
+            const match = db.prepare(`
+              SELECT l.id, m.business_name FROM leads l
+              JOIN merchants m ON l.merchant_id = m.id
+              WHERE LOWER(m.business_name) LIKE ?
+              LIMIT 1
+            `).get(`%${merchantName.toLowerCase()}%`) as any;
+            if (!match) {
+              await sendTelegram(chatId, `❌ No merchant found matching "${merchantName}".`);
+            } else {
+              db.prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run('QUALIFIED', match.id);
+              await sendTelegram(chatId, `✅ *${match.business_name}* marked as QUALIFIED!`, 'Markdown');
+            }
+
           } else if (text.startsWith('/export')) {
             const status = text.replace('/export', '').trim().toUpperCase() || 'NEW';
-            const query = `
+            const leads = db.prepare(`
               SELECT m.*, l.status as lead_status, l.created_at as lead_date
-              FROM leads l
-              JOIN merchants m ON l.merchant_id = m.id
-              WHERE l.status = ?
-              ORDER BY l.created_at DESC
-            `;
-            const leads = db.prepare(query).all(status) as any[];
+              FROM leads l JOIN merchants m ON l.merchant_id = m.id
+              WHERE l.status = ? ORDER BY l.created_at DESC
+            `).all(status) as any[];
 
             if (leads.length === 0) {
-              await sendTelegram(chatId, `⚠️ No leads found with status "${status}".`);
+              await sendTelegram(chatId, `⚠️ No leads with status "${status}".`);
               continue;
             }
 
-            await sendTelegram(chatId, `📊 Exporting ${leads.length} leads with status "${status}"...`);
-
-            const headers = [
-              "Business Name", "Category", "Sub-Category", "Website", "IG Handle", 
-              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score"
-            ];
-            
+            const headers = ["Business Name","Category","Sub-Category","Website","IG Handle","Email","Phone","WhatsApp","Followers","Fit Score","Contact Score","Source URL","Location","First Seen"];
             const escapeCsv = (val: any) => {
               if (val === null || val === undefined) return "";
               const str = String(val);
-              return (str.includes(",") || str.includes("\"") || str.includes("\n")) 
-                ? `"${str.replace(/"/g, '""')}"` 
-                : str;
+              return (str.includes(",") || str.includes("\"") || str.includes("\n")) ? `"${str.replace(/"/g, '""')}"` : str;
             };
-
             const rows = leads.map(m => [
               m.business_name, m.category, m.subcategory, m.website, m.instagram_handle,
-              m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score
+              m.email, m.phone, m.whatsapp, 0, m.myfatoorah_fit_score, m.contactability_score,
+              m.source_url, m.city || m.country, m.first_seen
             ].map(escapeCsv).join(","));
 
             const csvContent = [headers.join(","), ...rows].join("\n");
-            const fileName = `SmileyWizard_Leads_${status}_${new Date().toISOString().split('T')[0]}.csv`;
+            const fileName = `SmileyWizard_${status}_${new Date().toISOString().split('T')[0]}.csv`;
             const filePath = path.join(process.cwd(), fileName);
-
             fs.writeFileSync(filePath, csvContent);
 
             try {
-              await sendTelegramDocument(chatId, filePath, `🎯 Exported ${leads.length} leads (${status})`);
+              await sendTelegramDocument(chatId, filePath, `📊 ${leads.length} leads (${status})`);
             } finally {
               if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             }
+
           } else if (text === '/status') {
-            const stats: any = db.prepare("SELECT COUNT(*) as count FROM merchants").get();
-            const newLeads: any = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get();
-            await sendTelegram(chatId, `📊 *WIZARD STATUS*\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}`, 'Markdown');
+            const total: any = db.prepare("SELECT COUNT(*) as c FROM merchants").get();
+            const newL: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status = 'NEW'").get();
+            const contacted: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status = 'CONTACTED'").get();
+            const qualified: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status = 'QUALIFIED'").get();
+            const onboarded: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status = 'ONBOARDED'").get();
+            const runs: any = db.prepare("SELECT COUNT(*) as c FROM search_runs").get();
+            await sendTelegram(chatId,
+`📊 *SMILEY WIZARD STATUS*
+
+🏢 Total Merchants: ${total.c}
+🆕 New Leads: ${newL.c}
+📞 Contacted: ${contacted.c}
+✅ Qualified: ${qualified.c}
+🎉 Onboarded: ${onboarded.c}
+🔍 Search Runs: ${runs.c}`, 'Markdown');
+
           } else if (text === '/recent') {
-            const query = `
-              SELECT m.*, l.status as lead_status
-              FROM leads l
+            const leads = db.prepare(`
+              SELECT m.*, l.status as lead_status FROM leads l
               JOIN merchants m ON l.merchant_id = m.id
-              ORDER BY l.created_at DESC
-              LIMIT 5
-            `;
-            const leads = db.prepare(query).all() as any[];
+              ORDER BY l.created_at DESC LIMIT 5
+            `).all() as any[];
             if (leads.length === 0) {
               await sendTelegram(chatId, "📭 No leads in database yet.");
             } else {
               await sendTelegram(chatId, "🕒 *RECENT LEADS:*", 'Markdown');
               for (const m of leads) {
-                const msg = `🏢 *${m.business_name}* (${m.lead_status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
-                await sendTelegram(chatId, msg, 'Markdown');
+                await sendTelegram(chatId, `${fmtMerchant(m)}\n📋 Status: ${m.lead_status}`, 'Markdown');
               }
             }
-          } else if (text === '/start') {
-            await sendTelegram(chatId, "👋 Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start discovery\n/status - View DB stats\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
+
+          } else if (text === '/start' || text === '/help') {
+            await sendTelegram(chatId,
+`🧙‍♂️ *Smiley Wizard - Merchant Hunter*
+
+*Discovery:*
+/hunt <keywords> [location] - Find merchants
+/newonly - Show NEW leads only
+
+*Pipeline:*
+/status - Database stats
+/recent - Last 5 leads
+/contactable - Leads with phone/email
+/highfit - Top fit-score leads
+/save <name> - Mark lead as QUALIFIED
+
+*Export:*
+/export [status] - CSV export (default: NEW)`, 'Markdown');
           }
         }
       }

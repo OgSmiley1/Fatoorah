@@ -11,6 +11,10 @@ interface HuntParams {
   keywords: string;
   location?: string;
   maxResults?: number;
+  categories?: string[];
+  subCategories?: string[];
+  platforms?: Record<string, boolean>;
+  minFollowers?: number;
 }
 
 interface HuntResult {
@@ -221,34 +225,50 @@ export async function huntMerchants(params: HuntParams): Promise<HuntResult> {
   const runId = uuidv4();
   const location = params.location || 'Dubai';
   const maxResults = params.maxResults || 30;
+  const minFollowers = params.minFollowers || 0;
   const keywords = params.keywords;
 
-  logger.info('hunt.started', { runId, keywords, location });
+  // Build enriched search terms from categories + subcategories
+  const catTerms = (params.categories && params.categories.length > 0)
+    ? params.categories.join(' ')
+    : '';
+  const subTerms = (params.subCategories && params.subCategories.length > 0)
+    ? params.subCategories.join(' ')
+    : '';
+  const enrichedKeywords = [keywords, catTerms, subTerms].filter(Boolean).join(' ');
 
-  db.prepare('INSERT INTO search_runs (id, query, status) VALUES (?, ?, ?)').run(runId, keywords, 'pending');
+  // Determine which platforms to target
+  const platforms = params.platforms || { instagram: true, tiktok: true, website: true, facebook: true, telegram: true };
 
-  // Build DuckDuckGo queries for 3 strategies
+  logger.info('hunt.started', { runId, keywords: enrichedKeywords, location, categories: params.categories, subCategories: params.subCategories });
+
+  db.prepare('INSERT INTO search_runs (id, query, status) VALUES (?, ?, ?)').run(runId, enrichedKeywords, 'pending');
+
+  // Build DuckDuckGo queries dynamically based on selected platforms
+  const socialQueries: string[] = [];
+  if (platforms.instagram) socialQueries.push(`${enrichedKeywords} ${location} site:instagram.com`);
+  if (platforms.tiktok) socialQueries.push(`${enrichedKeywords} ${location} site:tiktok.com`);
+  if (platforms.facebook) socialQueries.push(`${enrichedKeywords} ${location} site:facebook.com`);
+  if (platforms.telegram) socialQueries.push(`${enrichedKeywords} ${location} site:t.me`);
+  if (platforms.website) socialQueries.push(`${enrichedKeywords} ${location} online shop store`);
+
   const strategies = [
     {
       name: 'Social & Web',
-      queries: [
-        `${keywords} ${location} site:instagram.com`,
-        `${keywords} ${location} site:tiktok.com`,
-        `${keywords} ${location} online shop store`,
-      ]
+      queries: socialQueries
     },
     {
       name: 'Directories',
       queries: [
-        `${keywords} ${location} business directory contact phone`,
-        `${keywords} ${location} yellow pages listing`,
+        `${enrichedKeywords} ${location} business directory contact phone`,
+        `${enrichedKeywords} ${location} yellow pages listing`,
       ]
     },
     {
       name: 'Niche & Industry',
       queries: [
-        `${keywords} ${location} shop buy delivery ecommerce`,
-        `${keywords} ${location} small business seller`,
+        `${enrichedKeywords} ${location} shop buy delivery ecommerce`,
+        `${enrichedKeywords} ${location} small business seller`,
       ]
     }
   ];
@@ -278,8 +298,12 @@ export async function huntMerchants(params: HuntParams): Promise<HuntResult> {
   // Extract merchants from search results
   let rawMerchants: any[] = [];
   for (const r of uniqueResults) {
-    const m = extractMerchantFromResult(r, keywords, location);
-    if (m) rawMerchants.push(m);
+    const m = extractMerchantFromResult(r, enrichedKeywords, location);
+    if (m) {
+      // Filter by min followers if set
+      if (minFollowers > 0 && m.followers < minFollowers) continue;
+      rawMerchants.push(m);
+    }
     if (rawMerchants.length >= maxResults) break;
   }
 

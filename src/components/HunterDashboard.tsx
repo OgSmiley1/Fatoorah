@@ -77,6 +77,7 @@ export const HunterDashboard: React.FC = () => {
   const [showTelegram, setShowTelegram] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
+  const [searchError, setSearchError] = React.useState<string | null>(null);
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
@@ -131,8 +132,9 @@ export const HunterDashboard: React.FC = () => {
     if (!searchKeywords) return;
     
     setLoading(true);
+    setSearchError(null);
     try {
-      const searchParams = overrideKeywords 
+      const searchParams = overrideKeywords
         ? { ...params, keywords: overrideKeywords }
         : params;
 
@@ -156,10 +158,10 @@ export const HunterDashboard: React.FC = () => {
           query: searchKeywords 
         });
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Search failed:", e);
-      setTgStatus('error');
-      setTimeout(() => setTgStatus('idle'), 5000);
+      setSearchError(e.message || 'Search failed. Please try again.');
+      setTimeout(() => setSearchError(null), 8000);
     } finally {
       setLoading(false);
     }
@@ -263,7 +265,7 @@ export const HunterDashboard: React.FC = () => {
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-slate-500 uppercase">Target Categories</label>
                   <div className="flex flex-wrap gap-1.5">
-                    {['Fashion', 'Abayas', 'Jewelry', 'Perfumes', 'Home Decor', 'Electronics', 'Food', 'Beauty'].map(cat => (
+                    {['Car Rental', 'Clothing', 'Abayas', 'Ecommerce', 'Services', 'Beauty', 'Perfumes', 'Jewelry', 'Restaurants', 'Coffee', 'Electronics', 'Fitness', 'Education', 'Travel', 'Real Estate', 'Auto Parts'].map(cat => (
                       <button
                         key={cat}
                         onClick={() => toggleCategory(cat)}
@@ -281,8 +283,30 @@ export const HunterDashboard: React.FC = () => {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase">Niche Focus</label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">Niche Focus (Sub-Categories)</label>
                   <div className="space-y-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {['Luxury', 'Handmade', 'Organic', 'Premium', 'Wholesale', 'Local Brand', 'COD', 'Online Only'].map(pill => (
+                        <button
+                          key={pill}
+                          onClick={() => {
+                            if (!params.subCategories.includes(pill)) {
+                              setParams(prev => ({ ...prev, subCategories: [...prev.subCategories, pill] }));
+                            } else {
+                              removeSubCategory(pill);
+                            }
+                          }}
+                          className={cn(
+                            "px-2 py-0.5 rounded text-[9px] font-bold border transition-all",
+                            params.subCategories.includes(pill)
+                              ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400"
+                              : "bg-slate-950/50 border-slate-800 text-slate-500 hover:border-slate-700"
+                          )}
+                        >
+                          {pill}
+                        </button>
+                      ))}
+                    </div>
                     <div className="relative">
                       <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
                       <input
@@ -291,7 +315,7 @@ export const HunterDashboard: React.FC = () => {
                         onChange={e => setSubInput(e.target.value)}
                         onKeyDown={addSubCategory}
                         className="mission-control-input w-full pl-9"
-                        placeholder="Type & Enter (e.g. Luxury)"
+                        placeholder="Custom niche (Enter to add)"
                       />
                     </div>
                     {params.subCategories.length > 0 && (
@@ -448,6 +472,17 @@ export const HunterDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Error Display */}
+            {searchError && (
+              <div className="p-4 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 text-sm font-bold flex items-center gap-3">
+                <Shield size={18} />
+                <span>{searchError}</span>
+                <button onClick={() => setSearchError(null)} className="ml-auto hover:text-white">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
 
             {/* Results Grid */}
             {merchants.length === 0 && !loading ? (

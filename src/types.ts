@@ -17,21 +17,23 @@ export interface RiskAssessment {
 }
 
 export interface EvidenceSource {
-  type: 'google_maps' | 'google_search' | 'official_registry' | 'other';
+  type: 'google_maps' | 'google_search' | 'web_search' | 'directory' | 'official_registry' | 'other';
   title: string;
   uri: string;
 }
 
-export type LeadStatus = 
-  | 'NEW' 
-  | 'SEEN_BEFORE' 
-  | 'CONTACTED' 
-  | 'FOLLOW_UP' 
-  | 'QUALIFIED' 
-  | 'NOT_QUALIFIED' 
-  | 'DUPLICATE' 
-  | 'REJECTED' 
-  | 'ONBOARDED' 
+export type LeadStatus =
+  | 'NEW'
+  | 'SEEN_BEFORE'
+  | 'CONTACTED'
+  | 'FOLLOW_UP'
+  | 'INTERESTED'
+  | 'MEETING'
+  | 'QUALIFIED'
+  | 'NOT_QUALIFIED'
+  | 'DUPLICATE'
+  | 'REJECTED'
+  | 'ONBOARDED'
   | 'ARCHIVED';
 
 export interface Lead {
