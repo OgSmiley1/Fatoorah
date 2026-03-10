@@ -3,12 +3,6 @@ import { Send, X, Shield, CheckCircle2, AlertCircle, Loader2, Zap, Save, Copy } 
 import { Merchant } from '../types';
 import { telegramService } from '../services/telegramService';
 import { motion, AnimatePresence } from 'motion/react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
 
 interface TelegramModalProps {
   isOpen: boolean;
@@ -235,3 +229,7 @@ export const TelegramModal: React.FC<TelegramModalProps> = ({ isOpen, onClose, m
     </div>
   );
 };
+
+function cn(...inputs: any[]) {
+  return inputs.filter(Boolean).join(' ');
+}

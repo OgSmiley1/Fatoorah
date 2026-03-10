@@ -29,7 +29,7 @@ export const generateMerchantHash = (merchant: {
   instagramHandle?: string;
   tradeLicense?: string;
 }): string => {
-  const normalizedName = merchant.businessName.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  const normalizedName = (merchant.businessName || "").toLowerCase().trim().replace(/[^a-z0-9]/g, '');
   const normalizedUrlStr = normalizeUrl(merchant.url || '');
   const normalizedPhoneStr = normalizePhone(merchant.phone || '');
   const normalizedInsta = (merchant.instagramHandle || '').toLowerCase().replace('@', '').trim();

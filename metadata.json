@@ -1,6 +1,6 @@
 {
-  "name": "Smiley Wizard: Merchant Hunter",
-  "description": "Elite merchant intelligence engine for GCC e-commerce. Discover high-potential leads, analyze revenue leakage, and command the hunt via Telegram remote control.",
+  "name": "MyFatoorah Acquisition Engine",
+  "description": "Professional merchant acquisition platform for MyFatoorah. Discover, qualify, and manage high-potential merchant leads across GCC markets.",
   "requestFramePermissions": [
     "geolocation"
   ]
