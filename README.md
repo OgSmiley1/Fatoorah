@@ -15,8 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/e82bf5e0-007e-4e21-a102-37fda
 
 1. Install dependencies:
    `npm install`
-2. (Optional) Set `TELEGRAM_BOT_TOKEN` in `.env.local` for Telegram remote control
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
-
-No API keys required — merchant search uses free web scraping via DuckDuckGo.

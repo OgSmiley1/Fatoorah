@@ -136,7 +136,28 @@ export const HunterDashboard: React.FC = () => {
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      const results = await geminiService.searchMerchants(searchParams);
+      let results: Merchant[] = [];
+      
+      // Strategy 1: Client-side AI Search (Resilient & Grounded)
+      console.log("Starting AI Search...");
+      const aiResults = await geminiService.aiSearchMerchants(searchParams);
+      
+      if (aiResults.length > 0) {
+        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
+        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        results = ingestResult.merchants;
+      }
+
+      // Strategy 2: Fallback to Server-side Scraper if AI found too few
+      if (results.length < (params.maxResults || 10) / 2) {
+        console.log("Falling back to server-side scraper...");
+        const scraperResults = await geminiService.searchMerchants(searchParams);
+        // Merge results, avoiding duplicates
+        const seenIds = new Set(results.map(r => r.id));
+        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
+        results = [...results, ...newScraperResults];
+      }
+
       setMerchants(results);
       
       // Save to history
