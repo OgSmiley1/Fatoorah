@@ -456,7 +456,7 @@ URL: ${m.url}
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: { server: httpServer } },
+      server: { middlewareMode: true, allowedHosts: true, hmr: { server: httpServer } },
       appType: "spa",
     });
     app.use(vite.middlewares);
