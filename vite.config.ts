@@ -14,9 +14,9 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5000,
     allowedHosts: 'all',
-    hmr: process.env.DISABLE_HMR === 'true' ? false : {
-      clientPort: 443,
-      protocol: 'wss',
+    strictPort: true,
+    watch: {
+      ignored: ['**/.local/**', '**/node_modules/**', '**/*.db', '**/*.db-wal', '**/*.db-shm'],
     },
   },
 });
