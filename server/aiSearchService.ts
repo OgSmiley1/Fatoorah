@@ -386,6 +386,139 @@ export async function generateScripts(merchant: {
   return generateEnrichedStaticScripts(merchant);
 }
 
+export async function searchWithScraper(params: SearchParams): Promise<MerchantCandidate[]> {
+  const { search } = await import('duck-duck-scrape');
+  const { normalizePhone } = await import('./dedupService');
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const { keywords, location, maxResults = 10 } = params;
+
+  async function safeSearch(query: string, retries = 3): Promise<Array<{ title: string; description: string; url: string }>> {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const initialDelay = i === 0 ? 2000 : 10000 * i;
+        await sleep(initialDelay + Math.random() * 3000);
+        const results = await search(query, { safeSearch: 0 });
+        return (results.results || []) as Array<{ title: string; description: string; url: string }>;
+      } catch (error: unknown) {
+        if (i === retries) return [];
+        await sleep(15000 * (i + 1) + Math.random() * 10000);
+      }
+    }
+    return [];
+  }
+
+  function extractBusinessName(title: string): string {
+    if (!title) return '';
+    const arabicPattern = /[\u0600-\u06FF]/;
+    if (arabicPattern.test(title)) {
+      let name = title.replace(/على انستقرام|على فيسبوك|على تيك توك|on Instagram|on Facebook|on TikTok/gi, '').replace(/@[\w.]+/g, '').replace(/\(.*?\)/g, '').replace(/["•·…]/g, '').trim();
+      const parts = name.split(/[\|\-–—]/);
+      name = parts[0].trim();
+      if (name.length < 2) name = title.split(/[\|\-–—\(]/)[0].trim();
+      return name;
+    }
+    let name = title.replace(/on Instagram|on Facebook|on TikTok|- YouTube|- Home/gi, '').replace(/@[\w.]+/g, '').replace(/\(.*?\)/g, '').trim();
+    const parts = name.split(/[\|\-–—]/);
+    name = parts[0].trim();
+    return name.length >= 2 ? name : '';
+  }
+
+  const queries: string[] = [];
+  const jitter = () => Math.random() > 0.5 ? ' ' : '';
+  queries.push(`${keywords}${jitter()} ${location} (site:instagram.com OR site:t.me) عباية متجر واتساب`);
+  queries.push(`${keywords}${jitter()} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com) shop store`);
+  queries.push(`${keywords}${jitter()} ${location} متجر واتساب "الدفع عند الاستلام" OR "كاش" OR "تواصل"`);
+  queries.push(`${keywords}${jitter()} ${location} "whatsapp" OR "contact us" OR "order" ecommerce shop`);
+
+  const allResults: Array<{ title: string; description: string; url: string }> = [];
+  for (let i = 0; i < queries.length; i++) {
+    const results = await safeSearch(queries[i]);
+    allResults.push(...results);
+    if (i < queries.length - 1) await sleep(5000 + Math.random() * 3000);
+  }
+
+  const uniqueResults = Array.from(new Map(allResults.map(r => [r.url, r])).values());
+  const candidates: MerchantCandidate[] = [];
+
+  for (const result of uniqueResults.slice(0, maxResults * 3)) {
+    const businessName = extractBusinessName(result.title || '');
+    if (!businessName || businessName.length < 2) continue;
+
+    let platform = 'website';
+    if (result.url.includes('instagram.com')) platform = 'instagram';
+    else if (result.url.includes('facebook.com')) platform = 'facebook';
+    else if (result.url.includes('tiktok.com')) platform = 'tiktok';
+    else if (result.url.includes('t.me')) platform = 'telegram';
+
+    let instagramHandle: string | null = null;
+    if (platform === 'instagram') {
+      const match = result.url.match(/instagram\.com\/([^\/\?]+)/);
+      if (match && !['p', 'explore', 'reels', 'stories', 'accounts'].includes(match[1])) {
+        instagramHandle = match[1];
+      }
+    }
+
+    const snippet = result.description || '';
+    const phonePatterns = [/(\+?(?:965|971|973|974|968|966)\s?\d{7,8})/, /(\+?\d{10,15})/];
+    let phone: string | null = null;
+    for (const p of phonePatterns) { const match = snippet.match(p); if (match) { phone = match[1].replace(/\s/g, ''); break; } }
+    const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    const email = emailMatch ? emailMatch[0] : null;
+    const whatsappMatch = snippet.match(/(?:واتساب|whatsapp|wa\.me)[:\s]*(\+?\d{7,15})/i);
+    const whatsapp = whatsappMatch ? whatsappMatch[1] : phone;
+    const normalizedPhone = normalizePhone(phone || '') || phone;
+    const normalizedWhatsapp = normalizePhone(whatsapp || '') || whatsapp;
+
+    candidates.push({
+      businessName, platform, url: result.url, instagramHandle,
+      phone: normalizedPhone, whatsapp: normalizedWhatsapp, email,
+      category: keywords.split(/[,\s]+/)[0],
+      evidence: [snippet],
+      discoverySource: 'scraper'
+    });
+  }
+  return candidates;
+}
+
+export async function runAllSources(params: SearchParams): Promise<{ candidates: MerchantCandidate[]; sourceCounts: Record<string, number> }> {
+  const sourcePromises = [
+    searchWithScraper(params).catch(err => { logger.error('scraper_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
+    searchWithPerplexity(params).catch(err => { logger.error('perplexity_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
+    searchWithGrok(params).catch(err => { logger.error('grok_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
+    searchWithGemini(params).catch(err => { logger.error('gemini_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; })
+  ];
+
+  const results = await Promise.allSettled(sourcePromises);
+
+  const urlToSources = new Map<string, Set<string>>();
+  const urlToCandidate = new Map<string, MerchantCandidate>();
+  const sourceCounts: Record<string, number> = {};
+
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value.length > 0) {
+      for (const c of result.value) {
+        const key = c.url.toLowerCase().replace(/\/$/, '');
+        sourceCounts[c.discoverySource] = (sourceCounts[c.discoverySource] || 0) + 1;
+
+        if (!urlToSources.has(key)) {
+          urlToSources.set(key, new Set());
+          urlToCandidate.set(key, c);
+        }
+        urlToSources.get(key)!.add(c.discoverySource);
+      }
+    }
+  }
+
+  const candidates: MerchantCandidate[] = [];
+  for (const [key, candidate] of urlToCandidate.entries()) {
+    const sources = Array.from(urlToSources.get(key)!);
+    candidates.push({ ...candidate, discoverySource: sources.join('+') });
+  }
+
+  return { candidates, sourceCounts };
+}
+
 export async function getAiStatus(): Promise<AiSourceStatus[]> {
   const sources: AiSourceStatus[] = [];
 

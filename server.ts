@@ -110,17 +110,6 @@ async function startServer() {
     }
   });
 
-  app.post("/api/search", async (req, res) => {
-    const { keywords, location, maxResults } = req.body;
-    try {
-      const result = await huntMerchants({ keywords, location, maxResults });
-      res.json(result);
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      res.status(500).json({ error: errMsg });
-    }
-  });
-
   app.post("/api/merchants/ingest", async (req, res) => {
     const { merchants, query, location } = req.body;
     try {

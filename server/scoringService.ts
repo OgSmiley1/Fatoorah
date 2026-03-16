@@ -130,29 +130,34 @@ function normalizePhoneForComparison(phone: string | null | undefined): string |
 }
 
 export function computeContactScore(m: MerchantInput): number {
+  const confidence = computeContactConfidence(m);
+
+  const CONFIDENCE_WEIGHTS: Record<ContactConfidenceLevel, number> = {
+    VERIFIED: 1.0,
+    LIKELY: 0.7,
+    WEAK: 0.3,
+    MISSING: 0,
+  };
+
   let score = 0;
-  const phone = m.phone || null;
-  const whatsapp = m.whatsapp || null;
-  const email = m.email || null;
-  const ig = m.instagramHandle || null;
-  const website = m.website || null;
 
-  if (phone) score += 30;
+  score += 30 * CONFIDENCE_WEIGHTS[confidence.phone];
 
-  const normPhone = normalizePhoneForComparison(phone);
-  const normWhatsapp = normalizePhoneForComparison(whatsapp);
+  const normPhone = normalizePhoneForComparison(m.phone || null);
+  const normWhatsapp = normalizePhoneForComparison(m.whatsapp || null);
 
-  if (whatsapp && normWhatsapp !== normPhone) {
-    score += 20;
-  } else if (whatsapp && normWhatsapp === normPhone) {
-    score += 5;
+  if (m.whatsapp && normWhatsapp !== normPhone) {
+    score += 20 * CONFIDENCE_WEIGHTS[confidence.whatsapp];
+  } else if (m.whatsapp && normWhatsapp === normPhone) {
+    score += 5 * CONFIDENCE_WEIGHTS[confidence.whatsapp];
   }
 
-  if (email) score += 25;
-  if (ig) score += 15;
-  if (website) score += 10;
+  score += 25 * CONFIDENCE_WEIGHTS[confidence.email];
+  score += 15 * CONFIDENCE_WEIGHTS[confidence.instagram];
 
-  return Math.min(score, 100);
+  if (m.website) score += 10;
+
+  return Math.min(Math.round(score), 100);
 }
 
 export function computeContactConfidence(m: MerchantInput): ContactConfidence {

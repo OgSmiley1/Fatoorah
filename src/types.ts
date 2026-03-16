@@ -3,7 +3,8 @@ export type ValidationStatus = 'VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
 export type ExclusionStatus = 'ACTIVE' | 'EXCLUDED' | 'BLACKLISTED';
 export type ContactConfidenceLevel = 'VERIFIED' | 'LIKELY' | 'WEAK' | 'MISSING';
 export type ContactabilityLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
-export type DiscoverySource = 'scraper' | 'perplexity' | 'grok' | 'gemini' | 'ollama' | 'manual';
+export type SingleDiscoverySource = 'scraper' | 'perplexity' | 'grok' | 'gemini' | 'ollama' | 'manual';
+export type DiscoverySource = string;
 
 export interface ContactValidation {
   status: ValidationStatus;

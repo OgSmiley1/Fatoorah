@@ -159,9 +159,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   COD
                 </span>
               )}
-              <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", sourceColors[source] || sourceColors.scraper)}>
-                {source}
-              </span>
+              {source.split('+').map((s, i) => (
+                <span key={i} className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", sourceColors[s] || sourceColors.scraper)}>
+                  {s}
+                </span>
+              ))}
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">

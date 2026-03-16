@@ -27,7 +27,7 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
     'Transaction Rate': m.revenueEstimate?.transactionRate || 'N/A',
     'Detected Gateways': (m.detectedGateways || []).join(', ') || 'None',
     'Has Payment Gateway': m.hasPaymentGateway ? 'Yes' : 'No',
-    'Discovery Source': m.discoverySource || 'scraper',
+    'Discovery Sources': m.discoverySource || 'scraper',
     'Risk Category': m.risk?.category || 'N/A',
     'Status': m.status || 'N/A',
     'First Found Date': m.foundDate ? new Date(m.foundDate).toLocaleDateString('en-GB') : 'N/A',

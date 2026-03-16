@@ -17,25 +17,38 @@ const HIDDEN_FROM_ACTIVE: LeadStatus[] = ['ARCHIVED', 'DUPLICATE', 'REJECTED'];
 
 export const PipelineView: React.FC = () => {
   const [leads, setLeads] = React.useState<Merchant[]>([]);
+  const [allLeads, setAllLeads] = React.useState<Merchant[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [filter, setFilter] = React.useState<LeadStatus | 'ALL' | 'ACTIVE'>('ACTIVE');
+  const [filter, setFilter] = React.useState<LeadStatus | 'ALL' | 'ACTIVE'>('NEW');
   const [editingLead, setEditingLead] = React.useState<string | null>(null);
   const [editForm, setEditForm] = React.useState({ notes: '', next_action: '', follow_up_date: '', outcome: '' });
+  const [statusCounts, setStatusCounts] = React.useState<Record<string, number>>({});
 
   const fetchLeads = async () => {
     setLoading(true);
     try {
+      const allData = await apiClient.getLeads();
+      setAllLeads(allData);
+
+      const counts: Record<string, number> = {};
+      for (const l of allData) {
+        const s = l.status || 'NEW';
+        counts[s] = (counts[s] || 0) + 1;
+      }
+      counts['ACTIVE'] = allData.filter(l => !HIDDEN_FROM_ACTIVE.includes((l.status || 'NEW') as LeadStatus)).length;
+      counts['ALL'] = allData.length;
+      setStatusCounts(counts);
+
       let data: Merchant[];
       if (filter === 'ALL') {
-        data = await apiClient.getLeads();
+        data = allData;
       } else if (filter === 'ACTIVE') {
-        data = await apiClient.getLeads();
-        data = data.filter((l: Merchant) => {
+        data = allData.filter((l: Merchant) => {
           const status = l.status || 'NEW';
           return !HIDDEN_FROM_ACTIVE.includes(status as LeadStatus);
         });
       } else {
-        data = await apiClient.getLeads(filter);
+        data = allData.filter(l => (l.status || 'NEW') === filter);
       }
       setLeads(data);
     } catch (error) {
@@ -86,22 +99,22 @@ export const PipelineView: React.FC = () => {
           <h2 className="text-xl font-black text-white uppercase tracking-tight">Sales Pipeline</h2>
           <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 flex-wrap">
             <button 
-              onClick={() => setFilter('ACTIVE')}
-              className={cn(
-                "px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
-                filter === 'ACTIVE' ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
-              )}
-            >
-              Active
-            </button>
-            <button 
               onClick={() => setFilter('NEW')}
               className={cn(
                 "px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
                 filter === 'NEW' ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-300"
               )}
             >
-              New Only
+              New {statusCounts['NEW'] ? `(${statusCounts['NEW']})` : ''}
+            </button>
+            <button 
+              onClick={() => setFilter('ACTIVE')}
+              className={cn(
+                "px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
+                filter === 'ACTIVE' ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
+              )}
+            >
+              Active {statusCounts['ACTIVE'] ? `(${statusCounts['ACTIVE']})` : ''}
             </button>
             {ACTIVE_STATUSES.filter(s => s !== 'NEW').map(s => (
               <button 
@@ -112,7 +125,7 @@ export const PipelineView: React.FC = () => {
                   filter === s ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-300"
                 )}
               >
-                {s.replace('_', ' ')}
+                {s.replace('_', ' ')} {statusCounts[s] ? `(${statusCounts[s]})` : ''}
               </button>
             ))}
             <button 
@@ -122,7 +135,7 @@ export const PipelineView: React.FC = () => {
                 filter === 'ALL' ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-300"
               )}
             >
-              All
+              All {statusCounts['ALL'] ? `(${statusCounts['ALL']})` : ''}
             </button>
           </div>
         </div>
