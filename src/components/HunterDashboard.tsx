@@ -384,17 +384,28 @@ export const HunterDashboard: React.FC = () => {
                 <h3 className="mission-control-label">AI Search Sources</h3>
                 <div className="space-y-2">
                   {aiSources.map(source => (
-                    <div key={source.name} className="flex items-center justify-between p-2 rounded-lg bg-slate-950/50 border border-slate-800">
-                      <div className="flex items-center gap-2">
-                        <div className={cn(
-                          "w-2 h-2 rounded-full",
-                          source.available ? "bg-emerald-400" : "bg-slate-600"
-                        )} />
-                        <span className="text-[10px] font-bold text-slate-300 uppercase">{source.name}</span>
+                    <div key={source.name} className="flex flex-col gap-0.5 p-2 rounded-lg bg-slate-950/50 border border-slate-800">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className={cn(
+                            "w-2 h-2 rounded-full flex-shrink-0",
+                            source.available ? "bg-emerald-400" : "bg-slate-600"
+                          )} />
+                          <span className="text-[10px] font-bold text-slate-300 uppercase">{source.name}</span>
+                          <span className={cn(
+                            "text-[8px] font-bold px-1 rounded uppercase",
+                            source.free ? "text-emerald-400 bg-emerald-400/10" : "text-amber-400 bg-amber-400/10"
+                          )}>
+                            {source.free ? 'Free' : 'Paid'}
+                          </span>
+                        </div>
+                        <span className="text-[8px] font-bold text-slate-500 uppercase">
+                          {source.available ? 'Active' : 'Off'}
+                        </span>
                       </div>
-                      <span className="text-[8px] font-bold text-slate-500 uppercase">
-                        {source.available ? 'Active' : 'Off'}
-                      </span>
+                      {source.reason && (
+                        <span className="text-[8px] text-slate-600 pl-4">{source.reason}</span>
+                      )}
                     </div>
                   ))}
                 </div>

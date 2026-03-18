@@ -23,6 +23,7 @@ interface AiSourceStatus {
   name: string;
   available: boolean;
   reason: string;
+  free: boolean;
 }
 
 interface ScriptResult {
@@ -111,6 +112,84 @@ export async function searchWithGrok(params: SearchParams): Promise<MerchantCand
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : String(error);
     logger.error('grok_search_failed', { error: errMsg });
+    return [];
+  }
+}
+
+export async function searchWithGroq(params: SearchParams): Promise<MerchantCandidate[]> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'You are a merchant research assistant. Always respond with a valid JSON array of merchant objects. No markdown, no explanation, just the JSON array.' },
+          { role: 'user', content: MERCHANT_PROMPT(params.keywords, params.location, params.maxResults || 10) }
+        ],
+        temperature: 0.1
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      logger.warn('groq_api_error', { status: response.status, error: errText });
+      return [];
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '';
+    const merchants = parseJsonMerchants(content);
+    return merchants.map(m => ({ ...m, discoverySource: 'groq' }));
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error('groq_search_failed', { error: errMsg });
+    return [];
+  }
+}
+
+export async function searchWithOpenRouter(params: SearchParams): Promise<MerchantCandidate[]> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://replit.com',
+        'X-Title': 'Smiley Wizard Merchant Hunter'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        messages: [
+          { role: 'system', content: 'You are a merchant research assistant. Always respond with a valid JSON array of merchant objects. No markdown, no explanation, just the JSON array.' },
+          { role: 'user', content: MERCHANT_PROMPT(params.keywords, params.location, params.maxResults || 10) }
+        ],
+        temperature: 0.1
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      logger.warn('openrouter_api_error', { status: response.status, error: errText });
+      return [];
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '';
+    const merchants = parseJsonMerchants(content);
+    return merchants.map(m => ({ ...m, discoverySource: 'openrouter' }));
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error('openrouter_search_failed', { error: errMsg });
     return [];
   }
 }
@@ -336,6 +415,108 @@ Return ONLY a JSON object: {"arabic":"<Arabic WhatsApp>","english":"<English Wha
   }
 }
 
+export async function generateScriptsWithGroq(merchant: {
+  businessName: string;
+  platform: string;
+  category?: string;
+  codSignal?: boolean;
+  whatsappOrdering?: boolean;
+  tier?: string;
+  hasPaymentGateway?: boolean;
+}): Promise<ScriptResult | null> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return null;
+
+  const prompt = `Generate personalized MyFatoorah sales outreach for "${merchant.businessName}" (${merchant.platform}, ${merchant.category || 'General'}).
+${merchant.codSignal ? 'They use COD - emphasize online payment benefits.' : ''}
+${merchant.whatsappOrdering ? 'They take WhatsApp orders - emphasize payment links.' : ''}
+${merchant.hasPaymentGateway ? 'They already have a gateway - emphasize MyFatoorah advantages.' : 'They have NO payment gateway - this is a fresh opportunity.'}
+
+Return ONLY a JSON object: {"arabic":"<Arabic WhatsApp>","english":"<English WhatsApp>","whatsapp":"<Short opener>","instagram":"<Instagram DM>"}`;
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'You are a sales copywriter. Return only valid JSON, no markdown.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*"arabic"[\s\S]*"english"[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    logger.info('script_generation_used', { provider: 'groq' });
+    return JSON.parse(jsonMatch[0]) as ScriptResult;
+  } catch {
+    return null;
+  }
+}
+
+export async function generateScriptsWithOpenRouter(merchant: {
+  businessName: string;
+  platform: string;
+  category?: string;
+  codSignal?: boolean;
+  whatsappOrdering?: boolean;
+  tier?: string;
+  hasPaymentGateway?: boolean;
+}): Promise<ScriptResult | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return null;
+
+  const prompt = `Generate personalized MyFatoorah sales outreach for "${merchant.businessName}" (${merchant.platform}, ${merchant.category || 'General'}).
+${merchant.codSignal ? 'They use COD - emphasize online payment benefits.' : ''}
+${merchant.whatsappOrdering ? 'They take WhatsApp orders - emphasize payment links.' : ''}
+${merchant.hasPaymentGateway ? 'They already have a gateway - emphasize MyFatoorah advantages.' : 'They have NO payment gateway - this is a fresh opportunity.'}
+
+Return ONLY a JSON object: {"arabic":"<Arabic WhatsApp>","english":"<English WhatsApp>","whatsapp":"<Short opener>","instagram":"<Instagram DM>"}`;
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://replit.com',
+        'X-Title': 'Smiley Wizard Merchant Hunter'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        messages: [
+          { role: 'system', content: 'You are a sales copywriter. Return only valid JSON, no markdown.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*"arabic"[\s\S]*"english"[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    logger.info('script_generation_used', { provider: 'openrouter' });
+    return JSON.parse(jsonMatch[0]) as ScriptResult;
+  } catch {
+    return null;
+  }
+}
+
 export function generateEnrichedStaticScripts(merchant: {
   businessName: string;
   platform: string;
@@ -378,11 +559,18 @@ export async function generateScripts(merchant: {
   hasPaymentGateway?: boolean;
 }): Promise<ScriptResult> {
   const ollamaResult = await generateScriptsWithOllama(merchant);
-  if (ollamaResult) return ollamaResult;
+  if (ollamaResult) {
+    logger.info('script_generation_used', { provider: 'ollama' });
+    return ollamaResult;
+  }
 
-  const geminiResult = await generateScriptsWithGemini(merchant);
-  if (geminiResult) return geminiResult;
+  const groqResult = await generateScriptsWithGroq(merchant);
+  if (groqResult) return groqResult;
 
+  const openRouterResult = await generateScriptsWithOpenRouter(merchant);
+  if (openRouterResult) return openRouterResult;
+
+  logger.info('script_generation_used', { provider: 'static_template' });
   return generateEnrichedStaticScripts(merchant);
 }
 
@@ -486,9 +674,11 @@ export async function searchWithScraper(params: SearchParams): Promise<MerchantC
 export async function runAllSources(params: SearchParams): Promise<{ candidates: MerchantCandidate[]; sourceCounts: Record<string, number> }> {
   const sourcePromises = [
     searchWithScraper(params).catch(err => { logger.error('scraper_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
-    searchWithPerplexity(params).catch(err => { logger.error('perplexity_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
-    searchWithGrok(params).catch(err => { logger.error('grok_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
-    searchWithGemini(params).catch(err => { logger.error('gemini_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; })
+    searchWithGroq(params).catch(err => { logger.error('groq_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
+    searchWithOpenRouter(params).catch(err => { logger.error('openrouter_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; }),
+    ...(process.env.PPLX_API_KEY ? [searchWithPerplexity(params).catch(err => { logger.error('perplexity_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; })] : []),
+    ...(process.env.XAI_API_KEY ? [searchWithGrok(params).catch(err => { logger.error('grok_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; })] : []),
+    ...(process.env.GEMINI_API_KEY ? [searchWithGemini(params).catch(err => { logger.error('gemini_source_failed', { error: String(err) }); return [] as MerchantCandidate[]; })] : [])
   ];
 
   const results = await Promise.allSettled(sourcePromises);
@@ -527,25 +717,8 @@ export async function getAiStatus(): Promise<AiSourceStatus[]> {
   sources.push({
     name: 'DuckDuckGo Scraper',
     available: true,
-    reason: 'Always available (no API key needed)'
-  });
-
-  sources.push({
-    name: 'Perplexity AI',
-    available: !!process.env.PPLX_API_KEY,
-    reason: process.env.PPLX_API_KEY ? 'API key configured' : 'Set PPLX_API_KEY to enable'
-  });
-
-  sources.push({
-    name: 'Grok (xAI)',
-    available: !!process.env.XAI_API_KEY,
-    reason: process.env.XAI_API_KEY ? 'API key configured' : 'Set XAI_API_KEY to enable'
-  });
-
-  sources.push({
-    name: 'Google Gemini',
-    available: !!process.env.GEMINI_API_KEY,
-    reason: process.env.GEMINI_API_KEY ? 'API key configured' : 'Set GEMINI_API_KEY to enable'
+    reason: 'Always available (no API key needed)',
+    free: true
   });
 
   const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -566,7 +739,85 @@ export async function getAiStatus(): Promise<AiSourceStatus[]> {
   sources.push({
     name: 'Ollama (Local)',
     available: ollamaAvailable,
-    reason: ollamaReason
+    reason: ollamaReason,
+    free: true
+  });
+
+  let groqAvailable = false;
+  let groqReason = 'Set GROQ_API_KEY to enable (free tier)';
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const resp = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (resp.ok || resp.status === 200) {
+        groqAvailable = true;
+        groqReason = 'API key configured and reachable';
+      } else {
+        groqReason = `API key configured but unreachable (HTTP ${resp.status})`;
+      }
+    } catch {
+      groqReason = 'API key configured but endpoint unreachable';
+    }
+  }
+  sources.push({
+    name: 'Groq',
+    available: groqAvailable,
+    reason: groqReason,
+    free: true
+  });
+
+  let openRouterAvailable = false;
+  let openRouterReason = 'Set OPENROUTER_API_KEY to enable (free models)';
+  if (process.env.OPENROUTER_API_KEY) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const resp = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (resp.ok || resp.status === 200) {
+        openRouterAvailable = true;
+        openRouterReason = 'API key configured and reachable';
+      } else {
+        openRouterReason = `API key configured but unreachable (HTTP ${resp.status})`;
+      }
+    } catch {
+      openRouterReason = 'API key configured but endpoint unreachable';
+    }
+  }
+  sources.push({
+    name: 'OpenRouter',
+    available: openRouterAvailable,
+    reason: openRouterReason,
+    free: true
+  });
+
+  sources.push({
+    name: 'Perplexity AI',
+    available: !!process.env.PPLX_API_KEY,
+    reason: process.env.PPLX_API_KEY ? 'API key configured' : 'Set PPLX_API_KEY to enable',
+    free: false
+  });
+
+  sources.push({
+    name: 'Grok (xAI)',
+    available: !!process.env.XAI_API_KEY,
+    reason: process.env.XAI_API_KEY ? 'API key configured' : 'Set XAI_API_KEY to enable',
+    free: false
+  });
+
+  sources.push({
+    name: 'Google Gemini',
+    available: !!process.env.GEMINI_API_KEY,
+    reason: process.env.GEMINI_API_KEY ? 'API key configured' : 'Set GEMINI_API_KEY to enable',
+    free: false
   });
 
   return sources;

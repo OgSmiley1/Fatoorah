@@ -86,6 +86,7 @@ export interface AiSourceStatus {
   name: string;
   available: boolean;
   reason: string;
+  free: boolean;
 }
 
 export interface Merchant {
