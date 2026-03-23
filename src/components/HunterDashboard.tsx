@@ -10,7 +10,6 @@ import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
 import { exportMerchantsToExcel, exportVendorShortlist } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
-import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -151,19 +150,9 @@ export const HunterDashboard: React.FC = () => {
 
       let results: Merchant[] = [];
 
-      // Strategy 1: Client-side AI Search (30s timeout)
-      console.log("Starting AI Search...");
-      const aiResults = await withTimeout(geminiService.aiSearchMerchants(searchParams), 30_000, []);
-
-      if (aiResults.length > 0) {
-        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await withTimeout(geminiService.ingestMerchants(aiResults, searchKeywords, params.location), 15_000, { merchants: [] });
-        results = ingestResult.merchants;
-      }
-
-      // Strategy 2: Fallback to Server-side Scraper if AI found too few (90s timeout)
-      if (results.length < (params.maxResults || 10) / 2) {
-        console.log("Falling back to server-side scraper...");
+      // Server-side scraper search (90s timeout)
+      console.log("Starting scraper search...");
+      {
         const scraperResults = await withTimeout(geminiService.searchMerchants(searchParams), 90_000, []);
         // Merge results, avoiding duplicates
         const seenIds = new Set(results.map(r => r.id));
@@ -599,14 +588,6 @@ export const HunterDashboard: React.FC = () => {
         savedLeads={savedLeads}
       />
 
-      <WizardChat 
-        onSearch={(keywords, location) => {
-          setParams(prev => ({ ...prev, keywords, location }));
-          handleSearch(keywords);
-        }}
-        onRefreshStats={refreshStats}
-        onUpdateStatus={handleUpdateLead}
-      />
     </div>
   );
 };
