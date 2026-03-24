@@ -48,24 +48,24 @@ export const telegramService = {
 
   formatMerchantMessage(m: Merchant): string {
     return `
-🏢 *${m.businessName || 'Unknown'}*
-📂 Category: ${m.category || 'N/A'}
+🏢 *${m.businessName}*
+📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-👥 Followers: ${(m.followers || 0).toLocaleString()}
-📍 Location: ${m.location || 'UAE'}
+👥 Followers: ${m.followers.toLocaleString()}
+📍 Location: ${m.location}
 
 🎯 *QUALIFICATION:*
 • Fit Score: ${m.fitScore || 0}/100
 • Contact Quality: ${m.contactScore || 0}/100
 • Confidence: ${m.confidenceScore || 0}/100
-⚠️ Risk: ${m.risk?.category || 'N/A'}
+⚠️ Risk: ${m.risk.category}
 
 💬 *OUTREACH SCRIPT (EN):*
 \`\`\`
-${m.scripts?.english || 'No script available'}
+${m.scripts.english}
 \`\`\`
 
-🔗 [View Profile](${m.url || '#'})
+🔗 [View Profile](${m.url})
     `.trim();
   },
 

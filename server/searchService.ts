@@ -7,6 +7,8 @@ import { checkDuplicate, normalizeName } from './dedupService';
 import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
+import { IngestResult } from "../discovery";
+import { SearchParams, Merchant } from "../src/types";
 
 const EMIRATES = ['Ajman', 'Dubai', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'Ras Al Khaimah', 'RAK', 'Fujairah', 'Umm Al Quwain', 'UAQ'];
 const COD_KEYWORDS = ['cash on delivery', 'COD', 'الدفع كاش', 'الدفع عند الاستلام', 'دفع عند الاستلام', 'pay on delivery'];
@@ -25,13 +27,54 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// Google scraping removed — CSS selectors are outdated and return 0 results.
-// All search strategies now use DuckDuckGo (safeSearch) which is more reliable.
+async function googleSearch(category = '', location = 'All'): Promise<any[]> {
+  const locations = (location === 'All') ? EMIRATES : [location];
+  
+  // Parallelize emirate searches with small staggered delays to avoid instant blocking
+  const searchPromises = locations.map(async (emirate, index) => {
+    try {
+      const query = `${category || 'instagram shop online store'} ${emirate} (instagram OR website OR متجر) (${COD_KEYWORDS.join(' OR ')})`;
+      const ua = getRandomUserAgent();
 
-async function extractContactsFromWebsite(url: string) {
+      // Small staggered delay: 0s, 1.5s, 3s...
+      await new Promise(r => setTimeout(r, index * 1500 + Math.random() * 1000));
+
+      const { data } = await axios.get(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=20&hl=ar`, {
+        headers: {
+          'User-Agent': ua,
+          'Accept-Language': 'ar,en-US,en',
+          'Referer': 'https://www.google.com'
+        },
+        timeout: 10000
+      });
+
+      const $ = cheerio.load(data);
+      const results = $('.g').map((_, el) => ({
+        title: $(el).find('h3').first().text().trim(),
+        url: $(el).find('a').first().attr('href') || '',
+        description: $(el).find('.VwiC3b').text().trim()
+      })).get();
+
+      return results.filter(r => 
+        r.url.includes('http') && 
+        (r.url.includes('.ae') || COD_KEYWORDS.some(kw => r.description.toLowerCase().includes(kw.toLowerCase())) || r.description.includes('instagram'))
+      );
+    } catch (error: any) {
+      logger.error('google_search_failed', { emirate, error: error.message });
+      return [];
+    }
+  });
+
+  const resultsArray = await Promise.all(searchPromises);
+  const allResults = resultsArray.flat();
+
+  return allResults.slice(0, 150);
+}
+
+export async function extractContactsFromWebsite(url: string) {
   try {
     const ua = getRandomUserAgent();
-    const { data } = await axios.get(url, { headers: { 'User-Agent': ua }, timeout: 5000 });
+    const { data } = await axios.get(url, { headers: { 'User-Agent': ua }, timeout: 8000 });
 
     const $ = cheerio.load(data);
     const html = data.toLowerCase();
@@ -73,7 +116,7 @@ async function extractContactsFromWebsite(url: string) {
   }
 }
 
-function estimateRevenue(followers: number, platform: string) {
+export function estimateRevenue(followers: number, platform: string) {
   let base = 5000; // Base monthly AED
   if (platform === 'instagram') base = followers * 0.5;
   if (platform === 'website') base = 25000;
@@ -86,13 +129,13 @@ function estimateRevenue(followers: number, platform: string) {
   };
 }
 
-function calculateSetupFee(revenue: number) {
+export function calculateSetupFee(revenue: number) {
   if (revenue > 100000) return 0; // Enterprise
   if (revenue > 50000) return 499;
   return 999;
 }
 
-function generateOutreachScripts(m: any) {
+export function generateOutreachScripts(m: any) {
   const name = m.businessName || 'Valued Merchant';
   const platform = m.platform || 'your platform';
   
@@ -104,72 +147,50 @@ function generateOutreachScripts(m: any) {
   };
 }
 
-import {
-  computeQualityScore,
-  computeReliabilityScore,
-  computeComplianceScore,
-  computeRiskAssessment,
-  computeWeightedScore,
-  computeVerification
+import { 
+  computeQualityScore, 
+  computeReliabilityScore, 
+  computeComplianceScore, 
+  computeRiskAssessment 
 } from './scoringService';
 
-async function enrichMerchantContacts(m: any) {
+export async function enrichMerchantContacts(m: any) {
   logger.info('enriching_merchant_contacts', { name: m.businessName });
-
-  // Track verification sources for multi-source validation
-  m._phoneSources = [];
-  m._emailSources = [];
-  m._enrichmentSources = [];
-  m.verificationSources = [m.platform || 'primary'];
-
+  
   // 1. Try fetching their website if available
   if (m.url && m.platform === 'website') {
     const webContacts = await extractContactsFromWebsite(m.url);
-
-    if (webContacts.phone && !m.phone) { m.phone = webContacts.phone; m._phoneSources.push('website'); }
-    else if (webContacts.phone && m.phone) { m._phoneSources.push('website'); } // Confirmed on website too
-    if (webContacts.email && !m.email) { m.email = webContacts.email; m._emailSources.push('website'); }
-    else if (webContacts.email && m.email) { m._emailSources.push('website'); }
+    
+    m.phone = m.phone || webContacts.phone;
+    m.email = m.email || webContacts.email;
     m.whatsapp = m.whatsapp || webContacts.whatsapp;
     m.instagramHandle = m.instagramHandle || webContacts.instagram;
     m.facebookUrl = m.facebookUrl || webContacts.facebook;
     m.tiktokHandle = m.tiktokHandle || webContacts.tiktok;
     m.isCOD = webContacts.codMentioned;
     m.paymentGateway = webContacts.gateways;
-    m.verificationSources.push('website_scrape');
   }
 
-  // 2. Follow-up DuckDuckGo search for contact details
-  const enrichmentQuery = `"${m.businessName}" ${m.category || ''} UAE contact phone email whatsapp`;
+  // 2. Follow-up search for contact details
+  const enrichmentQuery = `"${m.businessName}" ${m.category || ''} contact phone email whatsapp`;
   const enrichmentResults = await safeSearch(enrichmentQuery);
-
-  if (enrichmentResults.length > 0) {
-    m._enrichmentSources.push('duckduckgo');
-    m.verificationSources.push('duckduckgo');
-  }
-
+  
   for (const res of enrichmentResults) {
     const snippet = res.description || '';
-
+    
     if (!m.phone) {
       const phoneMatch = snippet.match(/(?:\+971|00971|0)?(?:50|52|54|55|56|58|2|3|4|6|7|9)\d{7}/);
-      if (phoneMatch) { m.phone = phoneMatch[0]; m._phoneSources.push('duckduckgo'); }
+      if (phoneMatch) m.phone = phoneMatch[0];
     }
-
+    
     if (!m.email) {
       const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (emailMatch) { m.email = emailMatch[0]; m._emailSources.push('duckduckgo'); }
+      if (emailMatch) m.email = emailMatch[0];
     }
-
+    
     if (!m.whatsapp) {
       const waMatch = snippet.match(/wa\.me\/(\d+)/);
       if (waMatch) m.whatsapp = waMatch[1];
-    }
-
-    // Extract physical address patterns (UAE-specific)
-    if (!m.physicalAddress) {
-      const addrMatch = snippet.match(/((?:Dubai|Abu Dhabi|Sharjah|Ajman|RAK|Fujairah|UAQ|Al Ain)[^,]*(?:,\s*UAE)?)/i);
-      if (addrMatch) m.physicalAddress = addrMatch[1].trim();
     }
 
     if (!m.isCOD) {
@@ -181,41 +202,28 @@ async function enrichMerchantContacts(m: any) {
   const rev = estimateRevenue(m.followers || 0, m.platform);
   m.estimatedRevenue = rev.monthly;
   m.setupFee = calculateSetupFee(rev.monthly);
-
-  // 4. Scripts — Arabic WhatsApp outreach mentioning MyFatoorah as COD alternative
+  
+  // 4. Scripts
   m.scripts = generateOutreachScripts(m);
-
-  // 5. Weighted Evaluation Matrix + Multi-Source Verification
-  const weighted = computeWeightedScore(m);
-  const verification = computeVerification(m);
-
-  m.qualityScore = weighted.composite;
-  m.evaluationGrade = weighted.grade;
-  m.evaluationBreakdown = weighted.breakdown;
-  m.evaluationRecommendation = weighted.recommendation;
+  
+  // 5. Advanced Scoring
+  m.qualityScore = computeQualityScore(m);
   m.reliabilityScore = computeReliabilityScore(m);
   m.complianceScore = computeComplianceScore(m);
   m.riskAssessment = computeRiskAssessment(m);
-  m.verification = verification;
 
   return m;
 }
 
-interface SearchParams {
-  keywords: string;
-  location: string;
-  maxResults?: number;
-}
-
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function safeSearch(query: string, retries = 2): Promise<any[]> {
+async function safeSearch(query: string, retries = 3): Promise<any[]> {
   for (let i = 0; i <= retries; i++) {
     try {
-      // Short delay before each attempt
-      const initialDelay = i === 0 ? 500 : 2000 * i;
-      await sleep(initialDelay + Math.random() * 1000);
-
+      // Reduced initial delay for first attempt
+      const initialDelay = i === 0 ? 500 : 8000 * i;
+      await sleep(initialDelay + Math.random() * 2000);
+      
       const results = await search(query, { safeSearch: 0 });
       return results.results || [];
     } catch (error: any) {
@@ -223,8 +231,8 @@ async function safeSearch(query: string, retries = 2): Promise<any[]> {
         logger.error('search_strategy_failed', { query, error: error.message });
         return [];
       }
-      // Backoff: 3s, 6s
-      const delay = 3000 * (i + 1) + Math.random() * 2000;
+      // Aggressive backoff: 15s, 30s, 45s...
+      const delay = 15000 * (i + 1) + Math.random() * 10000; 
       logger.warn('search_retry', { query, attempt: i + 1, delay });
       await sleep(delay);
     }
@@ -232,16 +240,14 @@ async function safeSearch(query: string, retries = 2): Promise<any[]> {
   return [];
 }
 
-export async function huntMerchants(params: SearchParams, onProgress?: (count: number) => void) {
-  const maxResults = Math.min(params.maxResults || 50, 100);
-  const { keywords, location } = params;
+export async function huntMerchants(
+  params: SearchParams, 
+  onProgress?: (count: number, step?: string) => void
+): Promise<IngestResult> {
+  const { keywords, location, maxResults = 50 } = params;
   const runId = uuidv4();
-
+  
   logger.info('hunt_started', { runId, keywords, location, maxResults });
-
-  // Global timeout: abort after 60 seconds
-  const deadline = Date.now() + 60_000;
-  const isTimedOut = () => Date.now() > deadline;
 
   try {
     const discoveredMerchants = [];
@@ -250,17 +256,14 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
     // We'll try up to 5 different query variations to get more results if needed
     const queryVariations = [
       { type: 'DDG', query: `${keywords} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com)` },
-      { type: 'DDG', query: `${keywords} ${location} contact phone email whatsapp` },
+      { type: 'GOOGLE_MULTI', query: keywords },
       { type: 'DDG', query: `${keywords} ${location} business directory` },
-      { type: 'DDG', query: `${keywords} ${location} online store shop website` },
+      { type: 'GOOGLE', query: `${keywords} ${location} retailers` },
       { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
     ];
 
-    let consecutiveFailures = 0;
     for (const variation of queryVariations) {
       if (discoveredMerchants.length >= maxResults) break;
-      if (isTimedOut()) { logger.warn('hunt_timeout', { runId }); break; }
-      if (consecutiveFailures >= 2) { logger.warn('hunt_too_many_failures', { runId }); break; }
 
       logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
       
@@ -268,9 +271,9 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
       if (variation.type === 'INVEST_IN_DUBAI') {
         // Only run if location is relevant
         if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
-          const dubaiResults = await scrapeInvestInDubai(keywords, maxResults - discoveredMerchants.length);
+          const dubaiResults = await scrapeInvestInDubai(keywords, maxResults - discoveredMerchants.length) || [];
           // Map to our standard format
-          results = dubaiResults.map(r => ({
+          results = (dubaiResults || []).map(r => ({
             title: r.businessName,
             description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
             url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(r.businessName)}`,
@@ -280,17 +283,28 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
             dulNumber: r.dulNumber
           }));
         }
+      } else if (variation.type === 'GOOGLE_MULTI') {
+        results = await googleSearch(variation.query, location) || [];
+      } else if (variation.type === 'GOOGLE') {
+        // Simple single google search
+        try {
+          const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
+          const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
+          const $ = cheerio.load(data);
+          results = $('.g').map((_, el) => ({
+            title: $(el).find('h3').first().text().trim(),
+            url: $(el).find('a').first().attr('href') || '',
+            description: $(el).find('.VwiC3b').text().trim()
+          })).get().filter(r => r.url.startsWith('http')) || [];
+        } catch (e) {
+          logger.error('google_single_search_failed', { query: variation.query });
+          results = [];
+        }
       } else {
-        results = await safeSearch(variation.query);
+        results = await safeSearch(variation.query) || [];
       }
       
-      if (results.length === 0) {
-        consecutiveFailures++;
-      } else {
-        consecutiveFailures = 0;
-      }
-
-      for (const result of results) {
+      for (const result of (results || [])) {
         if (seenUrls.has(result.url)) continue;
         seenUrls.add(result.url);
 
@@ -318,7 +332,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         const phone = phoneMatch ? phoneMatch[1] : null;
 
         const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const email = emailMatch ? emailMatch[0] : null;
+        const email = emailMatch ? emailMatch[1] : null;
 
         const merchantData = {
           businessName,
@@ -337,9 +351,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
           isCOD: false,
         };
 
-        // Enrich contacts (skip if running low on time)
-        const enriched = isTimedOut() ? merchantData : await enrichMerchantContacts(merchantData);
-        discoveredMerchants.push(enriched);
+        discoveredMerchants.push(merchantData);
 
         if (onProgress) onProgress(discoveredMerchants.length);
         if (discoveredMerchants.length >= maxResults) break;
@@ -347,15 +359,31 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
 
       // Small delay between variations
       if (discoveredMerchants.length < maxResults) {
-        await sleep(3000 + Math.random() * 2000);
+        await sleep(2000 + Math.random() * 1000);
       }
+    }
+
+    // Parallel Enrichment in chunks of 5 to avoid overwhelming resources
+    const enrichedMerchants = [];
+    const chunkSize = 5;
+    
+    if (onProgress) onProgress(discoveredMerchants.length, 'enriching');
+
+    for (let i = 0; i < discoveredMerchants.length; i += chunkSize) {
+      const chunk = discoveredMerchants.slice(i, i + chunkSize);
+      const enrichedChunk = await Promise.all(chunk.map(m => enrichMerchantContacts(m)));
+      enrichedMerchants.push(...enrichedChunk);
+      if (onProgress) onProgress(Math.min(i + chunkSize, discoveredMerchants.length), 'enriching');
     }
 
     const finalMerchants = [];
     let newLeadsCount = 0;
 
-    // Deduplicate against existing DB records and save
-    for (const m of discoveredMerchants) {
+    // Deduplicate and save
+    for (const m of enrichedMerchants) {
+      if (seenUrls.has(m.url)) continue;
+      seenUrls.add(m.url);
+
       const dupCheck = checkDuplicate(m);
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
@@ -370,18 +398,18 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         db.prepare(`
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url,
-            phone, whatsapp, email, instagram_handle, github_url, 
-            facebook_url, tiktok_handle, physical_address,
-            category, dul_number, confidence_score, contactability_score, 
+            category, subcategory, country, city, website, phone, whatsapp, 
+            email, instagram_handle, github_url, facebook_url, tiktok_handle,
+            physical_address, dul_number, confidence_score, contactability_score, 
             myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
             risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
             scripts_json, evidence_json, contact_validation_json, metadata_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, m.businessName, normalizeName(m.businessName), m.platform, m.url,
+          m.category || keywords.split(' ')[0], m.subcategory || null, location, m.location || null, m.website || null,
           m.phone, m.whatsapp || m.phone, m.email, m.instagramHandle, m.githubUrl,
           m.facebookUrl, m.tiktokHandle, m.physicalAddress,
-          m.category || keywords.split(' ')[0],
           m.dulNumber || null, confidenceScore, contactScore, fitScore,
           m.qualityScore || 0, m.reliabilityScore || 0, m.complianceScore || 0,
           JSON.stringify(m.riskAssessment || {}), m.estimatedRevenue || 0, m.setupFee || 0,

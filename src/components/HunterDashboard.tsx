@@ -4,12 +4,13 @@ import {
   Trash2, ChevronRight, Zap,
   X, TrendingUp, Send, Sparkles
 } from 'lucide-react';
-import { Merchant, SearchParams, SearchHistory, LeadStatus, UAE_EMIRATES, Emirate } from '../types';
+import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
 import { geminiService } from '../services/geminiService';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
 import { exportMerchantsToExcel, exportVendorShortlist } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
+import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -26,7 +27,6 @@ export const HunterDashboard: React.FC = () => {
   const [params, setParams] = React.useState<SearchParams>({
     keywords: 'Local Businesses, Retailers, SMEs',
     location: 'United Arab Emirates',
-    emirate: 'All',
     categories: [],
     subCategories: [],
     platforms: {
@@ -71,7 +71,7 @@ export const HunterDashboard: React.FC = () => {
   };
 
   const [loading, setLoading] = React.useState(false);
-  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number } | null>(null);
+  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number, status?: string, step?: string } | null>(null);
   const [merchants, setMerchants] = React.useState<Merchant[]>([]);
   const [savedLeads, setSavedLeads] = React.useState<Merchant[]>([]);
   const [stats, setStats] = React.useState({ total: 0, leads: 0 });
@@ -103,21 +103,29 @@ export const HunterDashboard: React.FC = () => {
 
   // Socket.io initialization
   React.useEffect(() => {
-    const socket = io();
+    const socket = io({
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       console.log('Connected to server socket');
     });
 
+    socket.on('connect_error', (err) => {
+      console.warn('WebSocket connection error:', err.message);
+    });
+
     socket.on('hunt-started', (data: any) => {
       setLoading(true);
-      setSearchProgress({ query: data.query, count: 0 });
+      setSearchProgress({ query: data.query, count: 0, status: 'searching' });
       setParams(prev => ({ ...prev, keywords: data.query }));
     });
 
     socket.on('hunt-progress', (data: any) => {
-      setSearchProgress(data);
+      setSearchProgress(prev => ({ ...prev, ...data, status: 'searching' }));
     });
 
     socket.on('hunt-completed', (data: any) => {
@@ -128,7 +136,13 @@ export const HunterDashboard: React.FC = () => {
     });
 
     return () => {
-      socket.disconnect();
+      if (socketRef.current) {
+        try {
+          socketRef.current.disconnect();
+        } catch (e) {
+          console.error('Error disconnecting socket:', e);
+        }
+      }
     };
   }, []);
 
@@ -137,46 +151,52 @@ export const HunterDashboard: React.FC = () => {
   const handleSearch = async (overrideKeywords?: string) => {
     const searchKeywords = overrideKeywords || params.keywords;
     if (!searchKeywords) return;
-
+    
     setLoading(true);
     try {
-      const searchParams = overrideKeywords
+      const searchParams = overrideKeywords 
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      // Helper: race a promise against a timeout
-      const withTimeout = <T,>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
-        Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
-
       let results: Merchant[] = [];
+      
+      // Strategy 1: Client-side AI Search (Resilient & Grounded)
+      console.log("Starting AI Search...");
+      const aiResults = await geminiService.aiSearchMerchants(searchParams);
+      
+      if (aiResults.length > 0) {
+        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
+        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        results = ingestResult.merchants;
+      }
 
-      // Server-side scraper search (90s timeout)
-      console.log("Starting scraper search...");
-      {
-        const scraperResults = await withTimeout(geminiService.searchMerchants(searchParams), 90_000, []);
+      // Strategy 2: Fallback to Server-side Scraper if AI found too few
+      if (results.length < (params.maxResults || 10) / 2) {
+        console.log("Falling back to server-side scraper...");
+        const scraperResults = await geminiService.searchMerchants(searchParams) || [];
         // Merge results, avoiding duplicates
         const seenIds = new Set(results.map(r => r.id));
-        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
+        const newScraperResults = (scraperResults || []).filter(r => !seenIds.has(r.id));
         results = [...results, ...newScraperResults];
       }
 
       setMerchants(results);
-
+      
       // Save to history
       saveSearch({
-        sessionId: Math.random().toString(36).slice(2, 11),
+        sessionId: Math.random().toString(36).substr(2, 9),
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
         resultsCount: results.length
       });
-
+      
       refreshStats();
-
+      
       if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', {
-          merchants: results,
-          query: searchKeywords
+        socketRef.current.emit('hunt-finished', { 
+          merchants: results, 
+          query: searchKeywords 
         });
       }
     } catch (e) {
@@ -471,20 +491,16 @@ export const HunterDashboard: React.FC = () => {
                     placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
                   />
                 </div>
-                <div className="w-full md:w-48 relative">
+                <div className="w-full md:w-64 relative">
                   <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
-                  <select
-                    value={params.emirate}
-                    onChange={e => {
-                      const emirate = e.target.value as Emirate;
-                      setParams({ ...params, emirate, location: emirate === 'All' ? 'United Arab Emirates' : emirate });
-                    }}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50 appearance-none cursor-pointer"
-                  >
-                    {UAE_EMIRATES.map(em => (
-                      <option key={em} value={em}>{em === 'All' ? 'All Emirates' : em}</option>
-                    ))}
-                  </select>
+                  <input
+                    type="text"
+                    value={params.location}
+                    onChange={e => setParams({ ...params, location: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
+                    placeholder="Location..."
+                  />
                 </div>
                 <button
                   onClick={() => handleSearch()}
@@ -588,6 +604,14 @@ export const HunterDashboard: React.FC = () => {
         savedLeads={savedLeads}
       />
 
+      <WizardChat 
+        onSearch={(keywords, location) => {
+          setParams(prev => ({ ...prev, keywords, location }));
+          handleSearch(keywords);
+        }}
+        onRefreshStats={refreshStats}
+        onUpdateStatus={handleUpdateLead}
+      />
     </div>
   );
 };

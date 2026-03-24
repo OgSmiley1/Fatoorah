@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -9,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
+import * as cheerio from "cheerio";
 import { huntMerchants } from "./server/searchService";
 import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
@@ -18,16 +18,13 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
   
-  if (!process.env.SESSION_SECRET) {
-    console.warn('[WARN] SESSION_SECRET not set. Using default secret. Set SESSION_SECRET env var for production.');
-  }
   app.use(session({
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      secure: true,
+      sameSite: 'none',
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000
     }
@@ -70,7 +67,7 @@ async function startServer() {
     });
   });
 
-  const PORT = parseInt(process.env.PORT || '3000');
+  const PORT = 3000;
 
   // --- API ROUTES ---
 
@@ -82,7 +79,7 @@ async function startServer() {
     try {
       const result = await huntMerchants(
         { keywords, location, maxResults },
-        (count) => io.emit('hunt-progress', { query: keywords, count })
+        (count, step) => io.emit('hunt-progress', { query: keywords, count, step })
       );
       res.json(result);
     } catch (error: any) {
@@ -120,11 +117,6 @@ async function startServer() {
     query += " ORDER BY l.created_at DESC";
     
     const leads = db.prepare(query).all(...params) as any[];
-    const safeParse = (json: string | null | undefined, fallback: any) => {
-      if (!json) return fallback;
-      try { return JSON.parse(json); } catch { return fallback; }
-    };
-
     const processedLeads = leads.map(l => ({
       ...l,
       dulNumber: l.dul_number,
@@ -137,13 +129,13 @@ async function startServer() {
       qualityScore: l.quality_score,
       reliabilityScore: l.reliability_score,
       complianceScore: l.compliance_score,
-      risk: safeParse(l.risk_assessment_json, { category: 'LOW', factors: [] }),
+      risk: l.risk_assessment_json ? JSON.parse(l.risk_assessment_json) : null,
       revenue: { monthly: l.estimated_revenue || 0, annual: (l.estimated_revenue || 0) * 12 },
       pricing: { setupFee: l.setup_fee || 0, transactionRate: '2.5% + 1 AED', settlementCycle: 'T+1' },
       paymentGateway: l.payment_gateway,
-      scripts: safeParse(l.scripts_json, {}),
-      contactValidation: safeParse(l.contact_validation_json, { status: 'UNVERIFIED', sources: [] }),
-      evidence: safeParse(l.evidence_json, [])
+      scripts: l.scripts_json ? JSON.parse(l.scripts_json) : null,
+      contactValidation: l.contact_validation_json ? JSON.parse(l.contact_validation_json) : { status: 'UNVERIFIED', sources: [] },
+      evidence: l.evidence_json ? JSON.parse(l.evidence_json) : []
     }));
     res.json(processedLeads);
   });
@@ -228,7 +220,7 @@ async function startServer() {
               
               const result = await huntMerchants(
                 { keywords, location: location || 'Dubai' },
-                (count) => io.emit('hunt-progress', { query, count })
+                (count, step) => io.emit('hunt-progress', { query, count, step })
               );
               
               io.emit('hunt-completed', { query, merchants: result.merchants });
@@ -365,79 +357,6 @@ async function startServer() {
 
   // --- VITE / STATIC SERVING ---
 
-  // Enhanced CSV export — must be before Vite middleware
-  // (Vite would intercept /api/export-csv otherwise in dev mode)
-  app.get('/api/export-csv', (req, res) => {
-    try {
-      const leads = db.prepare(`
-        SELECT
-          m.business_name, m.category, m.city, m.phone, m.email, m.whatsapp,
-          m.instagram_handle, m.facebook_url, m.tiktok_handle, m.physical_address,
-          m.source_url, m.source_platform, m.dul_number, m.quality_score,
-          m.reliability_score, m.compliance_score, m.confidence_score,
-          m.contactability_score, m.myfatoorah_fit_score, m.payment_gateway,
-          m.estimated_revenue, m.setup_fee, m.risk_assessment_json,
-          m.contact_validation_json, m.metadata_json,
-          l.status, l.created_at
-        FROM leads l
-        JOIN merchants m ON l.merchant_id = m.id
-        ORDER BY m.quality_score DESC, l.created_at DESC
-      `).all() as any[];
-
-      if (leads.length === 0) {
-        return res.status(404).send('No leads to export');
-      }
-
-      const safeParse = (json: string | null, fallback: any) => {
-        if (!json) return fallback;
-        try { return JSON.parse(json); } catch { return fallback; }
-      };
-
-      const headers = [
-        'Business Name', 'Emirate', 'Category', 'Phone', 'WhatsApp', 'Email',
-        'Instagram', 'Facebook', 'TikTok', 'Address', 'DUL Number',
-        'COD Status', 'Verification Level', 'Composite Score', 'Grade',
-        'Contact Score', 'Reliability Score', 'Compliance Score',
-        'Payment Gateway', 'Est. Revenue (AED/mo)', 'Risk Level', 'Risk Flags',
-        'Platform', 'Source URL', 'Status', 'Discovered At'
-      ];
-
-      const escapeCsv = (val: any) => {
-        if (val === null || val === undefined) return "";
-        const str = String(val);
-        return (str.includes(",") || str.includes("\"") || str.includes("\n"))
-          ? `"${str.replace(/"/g, '""')}"` : str;
-      };
-
-      const rows = leads.map((l: any) => {
-        const risk = safeParse(l.risk_assessment_json, { category: 'LOW', factors: [] });
-        const validation = safeParse(l.contact_validation_json, { status: 'UNVERIFIED' });
-        const meta = safeParse(l.metadata_json, {});
-        const isCOD = meta.isCOD ? 'YES' : 'NO';
-        const score = l.quality_score || 0;
-        const grade = score >= 80 ? 'A' : score >= 65 ? 'B' : score >= 50 ? 'C' : score >= 35 ? 'D' : 'F';
-
-        return [
-          l.business_name, l.city || '', l.category, l.phone, l.whatsapp, l.email,
-          l.instagram_handle, l.facebook_url, l.tiktok_handle, l.physical_address, l.dul_number,
-          isCOD, validation.status, score, grade,
-          l.contactability_score, l.reliability_score, l.compliance_score,
-          l.payment_gateway, l.estimated_revenue, risk.category,
-          (risk.factors || []).join('; '),
-          l.source_platform, l.source_url, l.status, l.created_at
-        ].map(escapeCsv).join(',');
-      });
-
-      const csvContent = [headers.join(','), ...rows].join('\n');
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=MyFatoorah_Leads_${new Date().toISOString().split('T')[0]}.csv`);
-      res.status(200).send(csvContent);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // --- VITE / STATIC SERVING (must be AFTER all API routes) ---
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -448,6 +367,53 @@ async function startServer() {
     app.use(express.static("dist"));
     app.get("*", (req, res) => res.sendFile("dist/index.html", { root: "." }));
   }
+
+  // Export leads to CSV
+  app.get('/api/export-csv', (req, res) => {
+    try {
+      const leads = db.prepare(`
+        SELECT 
+          m.business_name, m.category, m.phone, m.email, m.whatsapp, 
+          m.instagram_handle, m.facebook_url, m.tiktok_handle, m.physical_address,
+          m.source_url, m.dul_number, l.status, l.created_at
+        FROM leads l
+        JOIN merchants m ON l.merchant_id = m.id
+        ORDER BY l.created_at DESC
+      `).all() as any[];
+
+      if (leads.length === 0) {
+        return res.status(404).send('No leads to export');
+      }
+
+      const headers = [
+        'Business Name', 'Category', 'Phone', 'Email', 'WhatsApp', 
+        'Instagram', 'Facebook', 'TikTok', 'Address', 
+        'Source URL', 'DUL Number', 'Status', 'Discovered At'
+      ];
+
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return "";
+        const str = String(val);
+        return (str.includes(",") || str.includes("\"") || str.includes("\n")) 
+          ? `"${str.replace(/"/g, '""')}"` 
+          : str;
+      };
+
+      const rows = leads.map((l: any) => [
+        l.business_name, l.category, l.phone, l.email, l.whatsapp, 
+        l.instagram_handle, l.facebook_url, l.tiktok_handle, l.physical_address,
+        l.source_url, l.dul_number, l.status, l.created_at
+      ].map(escapeCsv).join(','));
+
+      const csvContent = [headers.join(','), ...rows].join('\n');
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=leads_export.csv');
+      res.status(200).send(csvContent);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

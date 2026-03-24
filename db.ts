@@ -89,4 +89,47 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_leads_merchant_id ON leads(merchant_id);
 `);
 
+// Migration: Add missing columns if they don't exist
+const tableInfo = db.prepare("PRAGMA table_info(merchants)").all() as any[];
+const columnNames = tableInfo.map(c => c.name);
+
+const migrations = [
+  { name: 'subcategory', type: 'TEXT' },
+  { name: 'country', type: 'TEXT' },
+  { name: 'city', type: 'TEXT' },
+  { name: 'website', type: 'TEXT' },
+  { name: 'whatsapp', type: 'TEXT' },
+  { name: 'instagram_handle', type: 'TEXT' },
+  { name: 'github_url', type: 'TEXT' },
+  { name: 'facebook_url', type: 'TEXT' },
+  { name: 'twitter_handle', type: 'TEXT' },
+  { name: 'linkedin_url', type: 'TEXT' },
+  { name: 'tiktok_handle', type: 'TEXT' },
+  { name: 'telegram_handle', type: 'TEXT' },
+  { name: 'physical_address', type: 'TEXT' },
+  { name: 'dul_number', type: 'TEXT' },
+  { name: 'quality_score', type: 'REAL DEFAULT 0' },
+  { name: 'reliability_score', type: 'REAL DEFAULT 0' },
+  { name: 'compliance_score', type: 'REAL DEFAULT 0' },
+  { name: 'risk_assessment_json', type: 'TEXT' },
+  { name: 'estimated_revenue', type: 'REAL DEFAULT 0' },
+  { name: 'setup_fee', type: 'REAL DEFAULT 0' },
+  { name: 'payment_gateway', type: 'TEXT' },
+  { name: 'scripts_json', type: 'TEXT' },
+  { name: 'evidence_json', type: 'TEXT' },
+  { name: 'contact_validation_json', type: 'TEXT' },
+  { name: 'metadata_json', type: 'TEXT' }
+];
+
+for (const col of migrations) {
+  if (!columnNames.includes(col.name)) {
+    try {
+      db.exec(`ALTER TABLE merchants ADD COLUMN ${col.name} ${col.type}`);
+      console.log(`Migration: Added column ${col.name} to merchants table`);
+    } catch (e) {
+      console.error(`Migration failed for ${col.name}:`, e);
+    }
+  }
+}
+
 export default db;
