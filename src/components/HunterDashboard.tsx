@@ -14,6 +14,7 @@ import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
+import { toast, Toaster } from 'sonner';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -158,29 +159,35 @@ export const HunterDashboard: React.FC = () => {
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      let results: Merchant[] = [];
+      let allRawResults: any[] = [];
+      let finalResults: Merchant[] = [];
       
-      // Strategy 1: Client-side AI Search (Resilient & Grounded)
-      console.log("Starting AI Search...");
-      const aiResults = await geminiService.aiSearchMerchants(searchParams);
+      // Strategy 1 & 2: Run AI Search and Scraper Search in parallel
+      console.log("Starting parallel search (AI + Scraper)...");
+      const [aiResults, scraperResults] = await Promise.all([
+        geminiService.aiSearchMerchants(searchParams).catch(err => {
+          console.error("AI Search failed:", err);
+          return [];
+        }),
+        geminiService.searchMerchants(searchParams).catch(err => {
+          console.error("Scraper Search failed:", err);
+          return [];
+        })
+      ]);
+
+      allRawResults = [...aiResults, ...(scraperResults || [])];
       
-      if (aiResults.length > 0) {
-        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
-        results = ingestResult.merchants;
+      if (allRawResults.length === 0) {
+        toast.error("No merchants found with either strategy.");
+        setLoading(false);
+        return;
       }
 
-      // Strategy 2: Fallback to Server-side Scraper if AI found too few
-      if (results.length < (params.maxResults || 10) / 2) {
-        console.log("Falling back to server-side scraper...");
-        const scraperResults = await geminiService.searchMerchants(searchParams) || [];
-        // Merge results, avoiding duplicates
-        const seenIds = new Set(results.map(r => r.id));
-        const newScraperResults = (scraperResults || []).filter(r => !seenIds.has(r.id));
-        results = [...results, ...newScraperResults];
-      }
+      console.log(`Found ${allRawResults.length} total raw results. Ingesting...`);
+      const ingestResult = await geminiService.ingestMerchants(allRawResults, searchKeywords, params.location);
+      finalResults = ingestResult.merchants;
 
-      setMerchants(results);
+      setMerchants(finalResults);
       
       // Save to history
       saveSearch({
@@ -188,14 +195,14 @@ export const HunterDashboard: React.FC = () => {
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
-        resultsCount: results.length
+        resultsCount: finalResults.length
       });
       
       refreshStats();
       
       if (socketRef.current) {
         socketRef.current.emit('hunt-finished', { 
-          merchants: results, 
+          merchants: finalResults, 
           query: searchKeywords 
         });
       }
@@ -212,9 +219,10 @@ export const HunterDashboard: React.FC = () => {
     handleSearchRef.current = handleSearch;
   }, [handleSearch]);
 
-  const handleUpdateLead = async (id: string, status: LeadStatus) => {
+  const handleUpdateLead = async (id: string, status: LeadStatus, leadId?: string) => {
     try {
-      await geminiService.updateLead(id, { status });
+      const updateId = leadId || id;
+      await geminiService.updateLead(updateId, { status });
       refreshStats();
     } catch (error) {
       console.error("Failed to update lead:", error);
@@ -222,7 +230,7 @@ export const HunterDashboard: React.FC = () => {
   };
 
   const handleSaveLead = async (merchant: Merchant) => {
-    handleUpdateLead(merchant.id, 'NEW');
+    handleUpdateLead(merchant.id, 'NEW', merchant.leadId);
   };
 
   const clearAllHistory = () => {

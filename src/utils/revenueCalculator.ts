@@ -9,24 +9,25 @@ export const GPR25_BENCHMARKS = {
 };
 
 export const calculateRevenueLeakage = (merchant: Partial<Merchant>) => {
-  const followers = merchant.followers || 0;
-  const estimatedMonthlyVolume = followers * 0.5; // Rough estimate: $0.5 per follower/month
+  const followers = merchant.followers ?? 0;
+  const estimatedMonthlyVolume = merchant.revenue?.monthly ?? (followers * 0.5); 
   
-  const currentMethods = merchant.paymentMethods || [];
+  const currentMethods = (merchant.paymentGateway || '').split(',').map(s => s.trim()).filter(Boolean);
   const missingMethods: string[] = [];
   
-  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('tabby') || m.toLowerCase().includes('tamara')))) {
+  const lowerGateway = (merchant.paymentGateway || '').toLowerCase();
+  
+  if (!lowerGateway.includes('tabby') && !lowerGateway.includes('tamara')) {
     missingMethods.push('BNPL (Tabby/Tamara)');
   }
-  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('apple') || m.toLowerCase().includes('google')))) {
+  if (!lowerGateway.includes('apple') && !lowerGateway.includes('google')) {
     missingMethods.push('Digital Wallets (Apple Pay)');
   }
-  if (!currentMethods.some(m => typeof m === 'string' && (m.toLowerCase().includes('card') || m.toLowerCase().includes('visa')))) {
+  if (!lowerGateway.includes('card') && !lowerGateway.includes('visa') && !lowerGateway.includes('mastercard')) {
     missingMethods.push('Credit Cards');
   }
 
   // Calculate loss
-  // If BNPL is missing, they lose a portion of the 49% who prefer it
   const bnplLoss = missingMethods.includes('BNPL (Tabby/Tamara)') ? estimatedMonthlyVolume * GPR25_BENCHMARKS.BNPL_PREFERENCE * 0.15 : 0;
   const walletLoss = missingMethods.includes('Digital Wallets (Apple Pay)') ? estimatedMonthlyVolume * GPR25_BENCHMARKS.DIGITAL_WALLETS * 0.1 : 0;
   

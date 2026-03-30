@@ -140,7 +140,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <Globe size={12} className="text-blue-400" /> {merchant.location}
+                <Globe size={12} className="text-blue-400" /> {merchant.location || 'UAE'}
+              </span>
+              <span>•</span>
+              <span className="flex items-center gap-1">
+                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers !== null ? merchant.followers.toLocaleString() : 'Not sourced'} followers
               </span>
               {merchant.dulNumber && (
                 <>
@@ -241,10 +245,10 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               <TrendingUp size={10} /> Est. Revenue
             </p>
             <p className="text-sm font-bold text-slate-100">
-              AED {merchant.revenue?.monthly?.toLocaleString() || '0'}/mo
+              {merchant.revenue?.monthly !== null ? `AED ${merchant.revenue.monthly.toLocaleString()}/mo` : 'Unknown'}
             </p>
             <p className="text-[9px] text-slate-500 uppercase">
-              AED {merchant.revenue?.annual?.toLocaleString() || '0'}/yr
+              {merchant.revenue?.basis || 'Baseline Heuristic'}
             </p>
           </div>
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50">
@@ -252,7 +256,9 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               <Zap size={10} /> MyFatoorah Offer
             </p>
             <p className="text-sm font-bold text-emerald-400">
-              {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : `AED ${merchant.pricing?.setupFee} SETUP`}
+              {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : 
+               merchant.pricing?.setupFee !== null ? `AED ${merchant.pricing.setupFee} SETUP` : 
+               'No offer computed'}
             </p>
             <p className="text-[9px] text-slate-500 uppercase">
               {merchant.pricing?.transactionRate} • {merchant.pricing?.settlementCycle}

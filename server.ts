@@ -1,17 +1,21 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { createServer as createViteServer } from "vite";
+// import { createServer as createViteServer } from "vite";
 import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
-import db from "./db";
+import db from "./db.ts";
 import { v4 as uuidv4 } from "uuid";
 import * as cheerio from "cheerio";
-import { huntMerchants } from "./server/searchService";
-import { logger } from "./server/logger";
-import { computeFitScore } from "./server/scoringService";
+import { huntMerchants } from "./server/searchService.ts";
+import { logger } from "./server/logger.ts";
+import { computeFitScore } from "./server/scoringService.ts";
+import { ingestMerchants } from "./discovery.ts";
+import { chat } from "./server/aiProviderService.ts";
+import axios from "axios";
+import { toMerchantViewModelFromRow } from "./server/presenters/merchantPresenter.ts";
 
 async function startServer() {
   const app = express();
@@ -55,6 +59,8 @@ async function startServer() {
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
 ⭐ Fit Score: ${m.fitScore}/100
+🛡️ Risk: ${m.risk?.category || 'LOW'} ${m.risk?.emoji || ''}
+💰 Est. Rev: AED ${m.revenue?.monthly?.toLocaleString() || 'Unknown'}
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
 🔗 [View Source](${m.url})
@@ -91,7 +97,6 @@ async function startServer() {
   app.post("/api/merchants/ingest", async (req, res) => {
     const { merchants, query, location } = req.body;
     try {
-      const { ingestMerchants } = await import("./discovery");
       const result = await ingestMerchants({ merchants, query, location });
       res.json(result);
     } catch (error: any) {
@@ -117,26 +122,7 @@ async function startServer() {
     query += " ORDER BY l.created_at DESC";
     
     const leads = db.prepare(query).all(...params) as any[];
-    const processedLeads = leads.map(l => ({
-      ...l,
-      dulNumber: l.dul_number,
-      facebookUrl: l.facebook_url,
-      twitterHandle: l.twitter_handle,
-      linkedinUrl: l.linkedin_url,
-      tiktokHandle: l.tiktok_handle,
-      telegramHandle: l.telegram_handle,
-      physicalAddress: l.physical_address,
-      qualityScore: l.quality_score,
-      reliabilityScore: l.reliability_score,
-      complianceScore: l.compliance_score,
-      risk: l.risk_assessment_json ? JSON.parse(l.risk_assessment_json) : null,
-      revenue: { monthly: l.estimated_revenue || 0, annual: (l.estimated_revenue || 0) * 12 },
-      pricing: { setupFee: l.setup_fee || 0, transactionRate: '2.5% + 1 AED', settlementCycle: 'T+1' },
-      paymentGateway: l.payment_gateway,
-      scripts: l.scripts_json ? JSON.parse(l.scripts_json) : null,
-      contactValidation: l.contact_validation_json ? JSON.parse(l.contact_validation_json) : { status: 'UNVERIFIED', sources: [] },
-      evidence: l.evidence_json ? JSON.parse(l.evidence_json) : []
-    }));
+    const processedLeads = leads.map(l => toMerchantViewModelFromRow(l));
     res.json(processedLeads);
   });
 
@@ -180,6 +166,45 @@ async function startServer() {
   app.get("/api/logs", (req, res) => {
     const logs = db.prepare("SELECT * FROM logs ORDER BY created_at DESC LIMIT 50").all();
     res.json(logs);
+  });
+
+  // AI Chat (Gemini primary → Groq fallback)
+  app.post("/api/ai-chat", async (req, res) => {
+    const { message, history = [], systemPrompt } = req.body;
+    if (!message) return res.status(400).json({ error: "message required" });
+    try {
+      const prompt = systemPrompt || `You are the SMILEY WIZARD, the intelligent core of the MyFatoorah Acquisition Engine. Help sales teams find and qualify merchants in the UAE. Be concise and professional.`;
+      const result = await chat([...history, { role: "user", content: message }], prompt);
+      res.json({ response: result.text, provider: result.provider });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message, provider: "none" });
+    }
+  });
+
+  // Geocode via Nominatim (OpenStreetMap — free, no API key needed)
+  let lastGeocodeAt = 0;
+  app.get("/api/geocode", async (req, res) => {
+    const address = req.query.address as string;
+    if (!address) return res.status(400).json({ error: "address required" });
+
+    // Respect Nominatim's 1 req/sec policy
+    const now = Date.now();
+    const wait = 1100 - (now - lastGeocodeAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastGeocodeAt = Date.now();
+
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&countrycodes=ae`;
+      const { data } = await axios.get(url, {
+        headers: { "User-Agent": "Fatoorah-MerchantFinder/1.0 (contact: admin@fatoorah.local)" },
+        timeout: 8000
+      });
+      const [hit] = data;
+      if (!hit) return res.status(404).json({ error: "Not found" });
+      res.json({ lat: parseFloat(hit.lat), lng: parseFloat(hit.lon), display_name: hit.display_name });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // --- TELEGRAM BOT (SERVER-SIDE) ---
@@ -234,7 +259,8 @@ async function startServer() {
 🏢 *${m.businessName}*
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${computeFitScore(m.platform, 0)}/100
+⭐ Fit Score: ${m.fitScore}/100
+🛡️ Risk: ${m.risk.category}
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
 🔗 [View Source](${m.url})
@@ -265,7 +291,8 @@ async function startServer() {
 
             const headers = [
               "Business Name", "Category", "Sub-Category", "Website", "IG Handle", 
-              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score"
+              "Email", "Phone", "WhatsApp", "Followers", "Confidence", "Fit Score", 
+              "Risk Category", "Est. Revenue", "Setup Fee", "Payment Gateway"
             ];
             
             const escapeCsv = (val: any) => {
@@ -276,10 +303,14 @@ async function startServer() {
                 : str;
             };
 
-            const rows = leads.map(m => [
-              m.business_name, m.category, m.subcategory, m.website, m.instagram_handle,
-              m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score
-            ].map(escapeCsv).join(","));
+            const rows = leads.map(row => {
+              const m = toMerchantViewModelFromRow(row);
+              return [
+                m.businessName, m.category, m.subCategory, m.website, m.instagramHandle,
+                m.email, m.phone, m.whatsapp, m.followers, m.confidenceScore, m.fitScore,
+                m.risk.category, m.revenue.monthly, m.pricing.setupFee, m.paymentGateway
+              ].map(escapeCsv).join(",");
+            });
 
             const csvContent = [headers.join(","), ...rows].join("\n");
             const fileName = `SmileyWizard_Leads_${status}_${new Date().toISOString().split('T')[0]}.csv`;
@@ -358,6 +389,7 @@ async function startServer() {
   // --- VITE / STATIC SERVING ---
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -373,9 +405,7 @@ async function startServer() {
     try {
       const leads = db.prepare(`
         SELECT 
-          m.business_name, m.category, m.phone, m.email, m.whatsapp, 
-          m.instagram_handle, m.facebook_url, m.tiktok_handle, m.physical_address,
-          m.source_url, m.dul_number, l.status, l.created_at
+          m.*, l.status, l.created_at as lead_date, l.id as lead_id
         FROM leads l
         JOIN merchants m ON l.merchant_id = m.id
         ORDER BY l.created_at DESC
@@ -386,9 +416,9 @@ async function startServer() {
       }
 
       const headers = [
-        'Business Name', 'Category', 'Phone', 'Email', 'WhatsApp', 
-        'Instagram', 'Facebook', 'TikTok', 'Address', 
-        'Source URL', 'DUL Number', 'Status', 'Discovered At'
+        'Lead ID', 'Business Name', 'Category', 'Phone', 'Email', 'WhatsApp', 
+        'Instagram', 'Followers', 'Source URL', 'DUL Number', 'Status', 
+        'Risk Category', 'Est. Revenue', 'Setup Fee', 'Payment Gateway', 'Discovered At'
       ];
 
       const escapeCsv = (val: any) => {
@@ -399,11 +429,14 @@ async function startServer() {
           : str;
       };
 
-      const rows = leads.map((l: any) => [
-        l.business_name, l.category, l.phone, l.email, l.whatsapp, 
-        l.instagram_handle, l.facebook_url, l.tiktok_handle, l.physical_address,
-        l.source_url, l.dul_number, l.status, l.created_at
-      ].map(escapeCsv).join(','));
+      const rows = leads.map((row: any) => {
+        const m = toMerchantViewModelFromRow(row);
+        return [
+          m.leadId, m.businessName, m.category, m.phone, m.email, m.whatsapp, 
+          m.instagramHandle, m.followers, m.url, m.dulNumber, m.status,
+          m.risk.category, m.revenue.monthly, m.pricing.setupFee, m.paymentGateway, row.lead_date
+        ].map(escapeCsv).join(',');
+      });
 
       const csvContent = [headers.join(','), ...rows].join('\n');
 
@@ -420,4 +453,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("FATAL: Failed to start server:", err);
+  process.exit(1);
+});

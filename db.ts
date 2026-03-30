@@ -1,7 +1,38 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 
-const db = new Database('wizard.db');
+const dbPath = path.join(process.cwd(), 'wizard.db');
+
+function createDatabase() {
+  try {
+    const database = new Database(dbPath);
+    database.pragma('journal_mode = WAL');
+    database.pragma('synchronous = NORMAL');
+    return database;
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('malformed') || (error as any).code === 'SQLITE_CORRUPT')) {
+      console.error('Database is malformed. Deleting and recreating...', error);
+      try {
+        // Delete the corrupted database file and its associated WAL/SHM files
+        if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+        if (fs.existsSync(`${dbPath}-wal`)) fs.unlinkSync(`${dbPath}-wal`);
+        if (fs.existsSync(`${dbPath}-shm`)) fs.unlinkSync(`${dbPath}-shm`);
+        
+        const database = new Database(dbPath);
+        database.pragma('journal_mode = WAL');
+        database.pragma('synchronous = NORMAL');
+        return database;
+      } catch (retryError) {
+        console.error('Failed to recreate database:', retryError);
+        throw retryError;
+      }
+    }
+    throw error;
+  }
+}
+
+const db = createDatabase();
 
 // Initialize schema
 db.exec(`
@@ -43,7 +74,8 @@ db.exec(`
     scripts_json TEXT,
     evidence_json TEXT,
     contact_validation_json TEXT,
-    metadata_json TEXT
+    metadata_json TEXT,
+    followers INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS leads (
@@ -118,7 +150,12 @@ const migrations = [
   { name: 'scripts_json', type: 'TEXT' },
   { name: 'evidence_json', type: 'TEXT' },
   { name: 'contact_validation_json', type: 'TEXT' },
-  { name: 'metadata_json', type: 'TEXT' }
+  { name: 'metadata_json', type: 'TEXT' },
+  { name: 'latitude', type: 'REAL' },
+  { name: 'longitude', type: 'REAL' },
+  { name: 'source_count', type: 'INTEGER DEFAULT 1' },
+  { name: 'source_list', type: 'TEXT' },
+  { name: 'followers', type: 'INTEGER' }
 ];
 
 for (const col of migrations) {

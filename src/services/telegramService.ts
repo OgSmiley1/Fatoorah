@@ -51,14 +51,15 @@ export const telegramService = {
 🏢 *${m.businessName}*
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-👥 Followers: ${m.followers.toLocaleString()}
+👥 Followers: ${m.followers !== null ? m.followers.toLocaleString() : 'Unknown'}
 📍 Location: ${m.location}
 
 🎯 *QUALIFICATION:*
 • Fit Score: ${m.fitScore || 0}/100
 • Contact Quality: ${m.contactScore || 0}/100
 • Confidence: ${m.confidenceScore || 0}/100
-⚠️ Risk: ${m.risk.category}
+🛡️ Risk: ${m.risk?.category || 'LOW'} ${m.risk?.emoji || ''}
+💰 Est. Rev: AED ${m.revenue?.monthly?.toLocaleString() || 'Unknown'}
 
 💬 *OUTREACH SCRIPT (EN):*
 \`\`\`

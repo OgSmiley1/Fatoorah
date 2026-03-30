@@ -3,6 +3,7 @@ import { Merchant } from '../types';
 
 export function exportMerchantsToExcel(merchants: Merchant[]) {
   const data = merchants.map((m) => ({
+    'Lead ID': m.leadId || 'N/A',
     'Business Name': m.businessName,
     'Category': m.category || 'N/A',
     'Sub-Category': m.subCategory || 'N/A',
@@ -11,23 +12,24 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
     'Email': m.email || 'N/A',
     'Phone': m.phone || 'N/A',
     'WhatsApp': m.whatsapp || 'N/A',
-    'Followers': m.followers,
-    'Quality Score': m.qualityScore || 0,
-    'Reliability Score': m.reliabilityScore || 0,
-    'Compliance Score': m.complianceScore || 0,
-    'Fit Score': m.fitScore || 0,
-    'Contact Score': m.contactScore || 0,
-    'Confidence Score': m.confidenceScore || 0,
+    'Followers': m.followers ?? 'Unknown',
+    'Quality Score': m.qualityScore ?? 0,
+    'Reliability Score': m.reliabilityScore ?? 0,
+    'Compliance Score': m.complianceScore ?? 0,
+    'Fit Score': m.fitScore ?? 0,
+    'Contact Score': m.contactScore ?? 0,
+    'Confidence Score': m.confidenceScore ?? 0,
     'Risk Category': m.risk?.category || 'N/A',
     'Risk Factors': (m.risk?.factors || []).join(', '),
     'Payment Gateway': m.paymentGateway || 'None detected',
-    'Est. Monthly Revenue (AED)': m.revenue?.monthly || 0,
-    'Setup Fee (AED)': m.pricing?.setupFee || 0,
+    'Est. Monthly Revenue (AED)': m.revenue?.monthly ?? 'Unknown',
+    'Revenue Basis': m.revenue?.basis || 'N/A',
+    'Setup Fee (AED)': m.pricing?.setupFee ?? 'N/A',
     'Transaction Rate (%)': m.pricing?.transactionRate || 'N/A',
     'Settlement Cycle': m.pricing?.settlementCycle || 'N/A',
+    'Offer Reason': m.pricing?.offerReason || 'N/A',
     'Contact Validation Status': m.contactValidation?.status || 'N/A',
     'DUL Number': m.dulNumber || 'N/A',
-    'First Found Date': m.foundDate ? new Date(m.foundDate).toLocaleDateString('en-GB') : 'N/A',
     'Direct Profile Link': m.url
   }));
 

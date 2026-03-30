@@ -2,13 +2,13 @@ import { search } from 'duck-duck-scrape';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import db from '../db';
-import { checkDuplicate, normalizeName } from './dedupService';
-import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
-import { logger } from './logger';
-import { scrapeInvestInDubai } from './investInDubaiService';
-import { IngestResult } from "../discovery";
-import { SearchParams, Merchant } from "../src/types";
+import db from '../db.ts';
+import { checkDuplicate, normalizeName } from './dedupService.ts';
+import { computeFitScore, computeContactScore, computeConfidence } from './scoringService.ts';
+import { logger } from './logger.ts';
+import { scrapeInvestInDubai } from './investInDubaiService.ts';
+import { SearchParams, Merchant, IngestResult } from "../src/types.ts";
+import { toMerchantViewModel } from './presenters/merchantPresenter.ts';
 
 const EMIRATES = ['Ajman', 'Dubai', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'Ras Al Khaimah', 'RAK', 'Fujairah', 'Umm Al Quwain', 'UAQ'];
 const COD_KEYWORDS = ['cash on delivery', 'COD', 'الدفع كاش', 'الدفع عند الاستلام', 'دفع عند الاستلام', 'pay on delivery'];
@@ -21,23 +21,23 @@ const USER_AGENTS = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 ];
 
-const ANTI_BAN_DELAY = () => Math.random() * 2800 + 1100; // 1.1s to 3.9s delay
+const ANTI_BAN_DELAY = () => Math.random() * 1500 + 500; // Reduced delay for better performance
 
 function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
 async function googleSearch(category = '', location = 'All'): Promise<any[]> {
-  const locations = (location === 'All') ? EMIRATES : [location];
+  const locations = (location === 'All') ? EMIRATES.slice(0, 3) : [location]; // Limit to 3 emirates if 'All' to speed up
   
-  // Parallelize emirate searches with small staggered delays to avoid instant blocking
+  // Parallelize emirate searches with small staggered delays
   const searchPromises = locations.map(async (emirate, index) => {
     try {
       const query = `${category || 'instagram shop online store'} ${emirate} (instagram OR website OR متجر) (${COD_KEYWORDS.join(' OR ')})`;
       const ua = getRandomUserAgent();
 
-      // Small staggered delay: 0s, 1.5s, 3s...
-      await new Promise(r => setTimeout(r, index * 1500 + Math.random() * 1000));
+      // Small staggered delay: 0s, 0.8s, 1.6s...
+      await new Promise(r => setTimeout(r, index * 800 + Math.random() * 500));
 
       const { data } = await axios.get(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=20&hl=ar`, {
         headers: {
@@ -45,7 +45,7 @@ async function googleSearch(category = '', location = 'All'): Promise<any[]> {
           'Accept-Language': 'ar,en-US,en',
           'Referer': 'https://www.google.com'
         },
-        timeout: 10000
+        timeout: 8000
       });
 
       const $ = cheerio.load(data);
@@ -60,7 +60,7 @@ async function googleSearch(category = '', location = 'All'): Promise<any[]> {
         (r.url.includes('.ae') || COD_KEYWORDS.some(kw => r.description.toLowerCase().includes(kw.toLowerCase())) || r.description.includes('instagram'))
       );
     } catch (error: any) {
-      logger.error('google_search_failed', { emirate, error: error.message });
+      logger.warn('google_search_blocked_or_failed', { emirate, error: error.message });
       return [];
     }
   });
@@ -68,7 +68,7 @@ async function googleSearch(category = '', location = 'All'): Promise<any[]> {
   const resultsArray = await Promise.all(searchPromises);
   const allResults = resultsArray.flat();
 
-  return allResults.slice(0, 150);
+  return allResults.slice(0, 100);
 }
 
 export async function extractContactsFromWebsite(url: string) {
@@ -86,6 +86,8 @@ export async function extractContactsFromWebsite(url: string) {
     const instagram = $('a[href*="instagram.com"]').first().attr('href') || '';
     const facebook = $('a[href*="facebook.com"]').first().attr('href') || '';
     const tiktok = $('a[href*="tiktok.com"]').first().attr('href') || '';
+    const linkedinRaw = $('a[href*="linkedin.com/company"], a[href*="linkedin.com/in"]').first().attr('href') || '';
+    const twitterRaw = $('a[href*="twitter.com"], a[href*="x.com"]').first().attr('href') || '';
 
     const codMentioned = COD_KEYWORDS.some(kw => html.includes(kw.toLowerCase()));
 
@@ -107,6 +109,8 @@ export async function extractContactsFromWebsite(url: string) {
       instagram: instagram.match(/instagram\.com\/([^\/\?]+)/)?.[1] || null,
       facebook: facebook.match(/facebook\.com\/([^\/\?]+)/)?.[1] || null,
       tiktok: tiktok.match(/tiktok\.com\/@?([^\/\?]+)/)?.[1] || null,
+      linkedinUrl: linkedinRaw || null,
+      twitterHandle: twitterRaw.match(/(?:twitter|x)\.com\/@?([^\/\?]+)/)?.[1] || null,
       codMentioned,
       gateways: gateways.join(', ') || 'None detected',
       confidence: codMentioned ? 'HIGH COD 🔥' : (phones.length > 0 ? 'Medium' : 'Low')
@@ -116,16 +120,28 @@ export async function extractContactsFromWebsite(url: string) {
   }
 }
 
-export function estimateRevenue(followers: number, platform: string) {
+export function estimateRevenue(followers: number | null, platform: string) {
   let base = 5000; // Base monthly AED
-  if (platform === 'instagram') base = followers * 0.5;
-  if (platform === 'website') base = 25000;
-  if (platform === 'tiktok') base = followers * 0.3;
+  let basis = 'General market baseline';
+  
+  if (platform === 'instagram' && followers !== null) {
+    base = followers * 0.5;
+    basis = `Estimated from ${followers.toLocaleString()} Instagram followers`;
+  } else if (platform === 'website') {
+    base = 25000;
+    basis = 'Average website-based SME revenue';
+  } else if (platform === 'tiktok' && followers !== null) {
+    base = followers * 0.3;
+    basis = `Estimated from ${followers.toLocaleString()} TikTok followers`;
+  } else if (followers === null) {
+    basis = 'Baseline for unverified social presence';
+  }
   
   const monthly = Math.max(base, 2000);
   return {
     monthly: Math.round(monthly),
-    annual: Math.round(monthly * 12)
+    annual: Math.round(monthly * 12),
+    basis
   };
 }
 
@@ -152,7 +168,7 @@ import {
   computeReliabilityScore, 
   computeComplianceScore, 
   computeRiskAssessment 
-} from './scoringService';
+} from './scoringService.ts';
 
 export async function enrichMerchantContacts(m: any) {
   logger.info('enriching_merchant_contacts', { name: m.businessName });
@@ -167,6 +183,8 @@ export async function enrichMerchantContacts(m: any) {
     m.instagramHandle = m.instagramHandle || webContacts.instagram;
     m.facebookUrl = m.facebookUrl || webContacts.facebook;
     m.tiktokHandle = m.tiktokHandle || webContacts.tiktok;
+    m.linkedinUrl = m.linkedinUrl || webContacts.linkedinUrl;
+    m.twitterHandle = m.twitterHandle || webContacts.twitterHandle;
     m.isCOD = webContacts.codMentioned;
     m.paymentGateway = webContacts.gateways;
   }
@@ -196,12 +214,33 @@ export async function enrichMerchantContacts(m: any) {
     if (!m.isCOD) {
       m.isCOD = COD_KEYWORDS.some(kw => snippet.toLowerCase().includes(kw.toLowerCase()));
     }
+
+    // Try to find followers in snippet if not present
+    if (m.followers === null || m.followers === undefined) {
+      const followerMatch = snippet.match(/(\d+(?:\.\d+)?[kKmM]?)\s+followers/i);
+      if (followerMatch) {
+        let val = followerMatch[1].toLowerCase();
+        let num = parseFloat(val);
+        if (val.endsWith('k')) num *= 1000;
+        if (val.endsWith('m')) num *= 1000000;
+        m.followers = Math.round(num);
+      }
+    }
   }
 
   // 3. Revenue & Pricing
-  const rev = estimateRevenue(m.followers || 0, m.platform);
+  const rev = estimateRevenue(m.followers ?? null, m.platform);
+  m.revenue = rev; // Set full revenue object
   m.estimatedRevenue = rev.monthly;
-  m.setupFee = calculateSetupFee(rev.monthly);
+  
+  const setupFee = calculateSetupFee(rev.monthly);
+  m.setupFee = setupFee;
+  m.pricing = {
+    setupFee,
+    transactionRate: '2.5% + 1.00 AED',
+    settlementCycle: 'T+2',
+    offerReason: m.isCOD ? 'High potential for COD conversion' : 'Standard digital integration'
+  };
   
   // 4. Scripts
   m.scripts = generateOutreachScripts(m);
@@ -217,22 +256,22 @@ export async function enrichMerchantContacts(m: any) {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function safeSearch(query: string, retries = 3): Promise<any[]> {
+async function safeSearch(query: string, retries = 2): Promise<any[]> {
   for (let i = 0; i <= retries; i++) {
     try {
-      // Reduced initial delay for first attempt
-      const initialDelay = i === 0 ? 500 : 8000 * i;
-      await sleep(initialDelay + Math.random() * 2000);
+      // Minimal delay for first attempt
+      const initialDelay = i === 0 ? 200 : 5000 * i;
+      await sleep(initialDelay + Math.random() * 1000);
       
       const results = await search(query, { safeSearch: 0 });
       return results.results || [];
     } catch (error: any) {
       if (i === retries) {
-        logger.error('search_strategy_failed', { query, error: error.message });
+        logger.warn('search_strategy_failed', { query, error: error.message });
         return [];
       }
-      // Aggressive backoff: 15s, 30s, 45s...
-      const delay = 15000 * (i + 1) + Math.random() * 10000; 
+      // Backoff: 10s, 20s
+      const delay = 10000 * (i + 1) + Math.random() * 5000; 
       logger.warn('search_retry', { query, attempt: i + 1, delay });
       await sleep(delay);
     }
@@ -252,6 +291,8 @@ export async function huntMerchants(
   try {
     const discoveredMerchants = [];
     const seenUrls = new Set();
+    // Cross-source tracking: normalizedName → Set of variation types that found it
+    const sourceMap = new Map<string, Set<string>>();
     
     // We'll try up to 5 different query variations to get more results if needed
     const queryVariations = [
@@ -262,49 +303,61 @@ export async function huntMerchants(
       { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
     ];
 
-    for (const variation of queryVariations) {
-      if (discoveredMerchants.length >= maxResults) break;
-
+    // Run search searches in parallel for speed, but stagger them to avoid rate limits
+    const variationPromises = queryVariations.map(async (variation, index) => {
+      // Stagger the start of each variation by 2 seconds
+      await sleep(index * 2000);
+      
       logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
       
-      let results: any[] = [];
-      if (variation.type === 'INVEST_IN_DUBAI') {
-        // Only run if location is relevant
-        if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
-          const dubaiResults = await scrapeInvestInDubai(keywords, maxResults - discoveredMerchants.length) || [];
-          // Map to our standard format
-          results = (dubaiResults || []).map(r => ({
-            title: r.businessName,
-            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
-            url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(r.businessName)}`,
-            isInvestInDubai: true,
-            businessName: r.businessName,
-            category: r.category,
-            dulNumber: r.dulNumber
-          }));
+      try {
+        let results = [];
+        if (variation.type === 'INVEST_IN_DUBAI') {
+          if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
+            const dubaiPromise = scrapeInvestInDubai(keywords, 15);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Invest in Dubai timeout")), 20000));
+            const dubaiResults = await Promise.race([dubaiPromise, timeoutPromise]) as any[] || [];
+            results = (dubaiResults || []).map(r => ({
+              title: r.businessName,
+              description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
+              url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(r.businessName)}`,
+              isInvestInDubai: true,
+              businessName: r.businessName,
+              category: r.category,
+              dulNumber: r.dulNumber
+            }));
+          }
+        } else if (variation.type === 'GOOGLE_MULTI') {
+          if (process.env.USE_GOOGLE_SCRAPING === 'true') {
+            results = await googleSearch(variation.query, location) || [];
+          }
+        } else if (variation.type === 'GOOGLE') {
+          if (process.env.USE_GOOGLE_SCRAPING === 'true') {
+            const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
+            const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 5000 });
+            const $ = cheerio.load(data);
+            results = $('.g').map((_, el) => ({
+              title: $(el).find('h3').first().text().trim(),
+              url: $(el).find('a').first().attr('href') || '',
+              description: $(el).find('.VwiC3b').text().trim()
+            })).get().filter(r => r.url.startsWith('http')) || [];
+          }
+        } else {
+          results = await safeSearch(variation.query) || [];
         }
-      } else if (variation.type === 'GOOGLE_MULTI') {
-        results = await googleSearch(variation.query, location) || [];
-      } else if (variation.type === 'GOOGLE') {
-        // Simple single google search
-        try {
-          const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
-          const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
-          const $ = cheerio.load(data);
-          results = $('.g').map((_, el) => ({
-            title: $(el).find('h3').first().text().trim(),
-            url: $(el).find('a').first().attr('href') || '',
-            description: $(el).find('.VwiC3b').text().trim()
-          })).get().filter(r => r.url.startsWith('http')) || [];
-        } catch (e) {
-          logger.error('google_single_search_failed', { query: variation.query });
-          results = [];
-        }
-      } else {
-        results = await safeSearch(variation.query) || [];
+        return { type: variation.type, results };
+      } catch (e: any) {
+        logger.warn('variation_failed', { type: variation.type, error: e.message });
+        return { type: variation.type, results: [] };
       }
-      
+    });
+
+    const resultsFromVariations = await Promise.all(variationPromises);
+    
+    for (const variationResult of resultsFromVariations) {
+      const { type, results } = variationResult;
       for (const result of (results || [])) {
+        if (discoveredMerchants.length >= maxResults) break;
         if (seenUrls.has(result.url)) continue;
         seenUrls.add(result.url);
 
@@ -351,19 +404,19 @@ export async function huntMerchants(
           isCOD: false,
         };
 
+        // Track which source types found this merchant
+        const normalKey = normalizeName(businessName);
+        if (!sourceMap.has(normalKey)) sourceMap.set(normalKey, new Set());
+        sourceMap.get(normalKey)!.add(type);
+
         discoveredMerchants.push(merchantData);
 
         if (onProgress) onProgress(discoveredMerchants.length);
         if (discoveredMerchants.length >= maxResults) break;
       }
-
-      // Small delay between variations
-      if (discoveredMerchants.length < maxResults) {
-        await sleep(2000 + Math.random() * 1000);
-      }
     }
 
-    // Parallel Enrichment in chunks of 5 to avoid overwhelming resources
+    // Parallel Enrichment in smaller chunks
     const enrichedMerchants = [];
     const chunkSize = 5;
     
@@ -371,7 +424,18 @@ export async function huntMerchants(
 
     for (let i = 0; i < discoveredMerchants.length; i += chunkSize) {
       const chunk = discoveredMerchants.slice(i, i + chunkSize);
-      const enrichedChunk = await Promise.all(chunk.map(m => enrichMerchantContacts(m)));
+      // Use a timeout for the entire chunk to prevent hanging
+      const enrichedChunk = await Promise.all(chunk.map(async (m, index) => {
+        // Stagger enrichment starts within the chunk
+        await sleep(index * 1500);
+        return Promise.race([
+          enrichMerchantContacts(m),
+          new Promise(resolve => setTimeout(() => {
+            logger.warn('enrichment_timeout', { name: m.businessName });
+            resolve(m);
+          }, 45000)) // 45s timeout per merchant
+        ]);
+      }));
       enrichedMerchants.push(...enrichedChunk);
       if (onProgress) onProgress(Math.min(i + chunkSize, discoveredMerchants.length), 'enriching');
     }
@@ -381,41 +445,47 @@ export async function huntMerchants(
 
     // Deduplicate and save
     for (const m of enrichedMerchants) {
-      if (seenUrls.has(m.url)) continue;
-      seenUrls.add(m.url);
-
       const dupCheck = checkDuplicate(m);
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
         const fitScore = computeFitScore(m.platform, 0);
         const contactScore = computeContactScore(m);
-        const confidenceScore = computeConfidence(m);
+        const sourceCount = sourceMap.get(normalizeName(m.businessName))?.size || 1;
+        const sourceList = Array.from(sourceMap.get(normalizeName(m.businessName)) || []);
+        const confidenceScore = computeConfidence(m, sourceCount);
         const contactValidation = {
           status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
           sources: ['Scraper', m.platform]
         };
 
+        const riskAssessment = computeRiskAssessment(m);
+
         db.prepare(`
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url,
-            category, subcategory, country, city, website, phone, whatsapp, 
+            category, subcategory, country, city, website, phone, whatsapp,
             email, instagram_handle, github_url, facebook_url, tiktok_handle,
-            physical_address, dul_number, confidence_score, contactability_score, 
+            twitter_handle, linkedin_url,
+            physical_address, dul_number, confidence_score, contactability_score,
             myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
             risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
-            scripts_json, evidence_json, contact_validation_json, metadata_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            scripts_json, evidence_json, contact_validation_json, metadata_json,
+            source_count, source_list, followers
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, m.businessName, normalizeName(m.businessName), m.platform, m.url,
           m.category || keywords.split(' ')[0], m.subcategory || null, location, m.location || null, m.website || null,
           m.phone, m.whatsapp || m.phone, m.email, m.instagramHandle, m.githubUrl,
-          m.facebookUrl, m.tiktokHandle, m.physicalAddress,
-          m.dulNumber || null, confidenceScore, contactScore, fitScore,
+          m.facebookUrl, m.tiktokHandle, m.twitterHandle || null, m.linkedinUrl || null,
+          m.physicalAddress, m.dulNumber || null,
+          confidenceScore, contactScore, fitScore,
           m.qualityScore || 0, m.reliabilityScore || 0, m.complianceScore || 0,
-          JSON.stringify(m.riskAssessment || {}), m.estimatedRevenue || 0, m.setupFee || 0,
+          JSON.stringify(riskAssessment), m.revenue?.monthly || 0, m.pricing?.setupFee || 0,
           m.paymentGateway || 'None detected', JSON.stringify(m.scripts || {}),
-          JSON.stringify(m.evidence), JSON.stringify(contactValidation), 
-          JSON.stringify({ isCOD: m.isCOD })
+          JSON.stringify(m.evidence), JSON.stringify(contactValidation),
+          JSON.stringify({ isCOD: m.isCOD }),
+          sourceCount, JSON.stringify(sourceList),
+          m.followers || null
         );
 
         const leadId = uuidv4();
@@ -426,12 +496,20 @@ export async function huntMerchants(
         `).run(leadId, merchantId, runId, 'NEW');
 
         newLeadsCount++;
-        finalMerchants.push({ 
+        finalMerchants.push(toMerchantViewModel({ 
           ...m, 
           id: merchantId, 
+          leadId,
           status: 'NEW',
-          contactValidation
-        });
+          contactValidation,
+          fitScore,
+          contactScore,
+          confidenceScore,
+          sourceCount,
+          sourceList,
+          risk: riskAssessment,
+          revenue: m.revenue
+        }));
       }
     }
 

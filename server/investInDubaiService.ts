@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-import { logger } from './logger';
+import { logger } from './logger.ts';
 
 export async function scrapeInvestInDubai(query: string, maxResults: number = 20) {
   logger.info('invest_in_dubai_scrape_started', { query });

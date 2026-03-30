@@ -63,12 +63,14 @@ export interface SearchRun {
 
 export interface Merchant {
   id: string;
-  merchantHash: string;
-  mapsPlaceId?: string;
-  evidence: EvidenceSource[];
+  leadId?: string;
   businessName: string;
   platform: string;
   url: string;
+  website?: string;
+  category?: string;
+  subCategory?: string;
+  location?: string;
   instagramHandle?: string;
   facebookUrl?: string;
   twitterHandle?: string;
@@ -77,35 +79,43 @@ export interface Merchant {
   telegramHandle?: string;
   githubUrl?: string;
   physicalAddress?: string;
-  category: string;
-  subCategory?: string;
-  followers: number;
-  bio: string;
-  email: string;
-  phone: string;
-  whatsapp: string;
-  website: string;
-  location: string;
-  lastActive: string;
+  dulNumber?: string;
+  followers: number | null;
+  phone?: string;
+  whatsapp?: string;
+  email?: string;
   isCOD: boolean;
-  paymentMethods: string[];
-  contactValidation: ContactValidation;
-  risk: RiskAssessment;
+  paymentGateway?: string;
+  fitScore: number | null;
+  contactScore: number | null;
+  confidenceScore: number | null;
+  qualityScore: number | null;
+  reliabilityScore: number | null;
+  complianceScore: number | null;
+  risk: {
+    score: number | null;
+    category: RiskCategory;
+    emoji: string;
+    color: string;
+    factors: string[];
+  };
   revenue: {
-    monthly: number;
-    annual: number;
+    monthly: number | null;
+    annual: number | null;
+    confidence: RiskCategory;
+    basis: string;
   };
   pricing: {
-    setupFee: number;
+    setupFee: number | null;
     transactionRate: string;
     settlementCycle: string;
+    offerReason: string;
   };
-  roi: {
-    feeSavings: number;
-    bnplUplift: number;
-    cashFlowGain: number;
-    totalMonthlyGain: number;
-    annualImpact: number;
+  evidence: Array<{ title: string; uri: string; snippet?: string; type?: string }>;
+  contactValidation: {
+    status: ValidationStatus;
+    sources: string[];
+    notes?: string;
   };
   scripts: {
     arabic: string;
@@ -113,22 +123,8 @@ export interface Merchant {
     whatsapp: string;
     instagram: string;
   };
-  otherProfiles: { platform: string; url: string }[];
-  registrationInfo?: string;
-  tradeLicense?: string;
-  foundDate: string;
-  searchSessionId: string;
-  analyzedAt: string;
-  dulNumber?: string;
-  contactScore?: number;
-  fitScore?: number;
-  confidenceScore?: number;
-  qualityScore?: number;
-  reliabilityScore?: number;
-  complianceScore?: number;
-  paymentGateway?: string;
-  duplicateReason?: string;
   status?: string;
+  duplicateReason?: string;
 }
 
 export interface SearchParams {
@@ -157,4 +153,10 @@ export interface SearchHistory {
   category: string;
   resultsCount: number;
   date: string;
+}
+
+export interface IngestResult {
+  merchants: any[];
+  runId: string;
+  newLeadsCount: number;
 }

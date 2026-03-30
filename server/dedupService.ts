@@ -1,4 +1,4 @@
-import db from '../db';
+import db from '../db.ts';
 
 export function normalizeName(name: string): string {
   if (!name) return '';

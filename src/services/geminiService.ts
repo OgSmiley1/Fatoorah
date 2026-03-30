@@ -74,61 +74,78 @@ export const geminiService = {
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const prompt = `Perform a WIDE-NET search for ${params.maxResults || 50} real, active merchants across the ENTIRE ${params.location}. 
+    const prompt = `Perform a targeted search for ${Math.min(params.maxResults || 20, 30)} real, active merchants across ${params.location}. 
     
-    If keywords are broad (like "Businesses" or "SMEs"), you MUST diversify the results across at least 10 different categories (e.g., Fashion, Tech, F&B, Services, etc.).
+    Keywords: ${params.keywords}
     
-    CRITICAL: Focus on finding VERIFIED leads. A verified lead MUST have at least one valid contact method (Phone, WhatsApp, or Email).
+    If keywords are broad, diversify across categories like Fashion, Tech, F&B, Services.
     
-    ORCHESTRATION MODE: You are acting as a Multi-Engine Orchestrator (Gemini + Web Intelligence). Use your internal knowledge and real-time search to find the most relevant local businesses in the UAE that are NOT yet using advanced payment gateways.
+    Focus on VERIFIED leads with at least one valid contact method (Phone, WhatsApp, or Email).
     
-    For each merchant, provide:
+    You are a Multi-Engine Orchestrator. Use internal knowledge and real-time search for UAE businesses NOT yet using advanced payment gateways.
+    
+    Provide:
     1. Business Name
-    2. Primary Platform (instagram, facebook, tiktok, or website)
-    3. Direct URL to their profile or site
+    2. Platform (instagram, facebook, tiktok, website, github)
+    3. Direct URL
     4. Contact details (phone, email, instagram handle)
-    5. Category: Be specific (e.g., "Handmade Jewelry", "Cloud Kitchen")
-    6. Verification Status: Explain why this lead is considered "verified".
+    5. Specific Category
+    6. DUL number if found
+    7. Verification Reason
     
-    Only return real, currently active businesses in the UAE. Avoid international giants.`;
+    Only return real, currently active businesses in the UAE.`;
 
     try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                businessName: { type: Type.STRING },
-                platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'github'] },
-                url: { type: Type.STRING },
-                instagramHandle: { type: Type.STRING },
-                githubUrl: { type: Type.STRING },
-                phone: { type: Type.STRING },
-                email: { type: Type.STRING },
-                facebookUrl: { type: Type.STRING },
-                tiktokHandle: { type: Type.STRING },
-                physicalAddress: { type: Type.STRING },
-                category: { type: Type.STRING },
-                dulNumber: { type: Type.STRING, description: "Official license or DUL number if found" },
-                evidence: { type: Type.STRING, description: "A short snippet or reason why this merchant was found" },
-                verificationReason: { type: Type.STRING, description: "Explanation of why this lead is verified" }
-              },
-              required: ['businessName', 'platform', 'url']
-            }
+      const config: any = {
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              businessName: { type: Type.STRING },
+              platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'github'] },
+              url: { type: Type.STRING },
+              instagramHandle: { type: Type.STRING },
+              githubUrl: { type: Type.STRING },
+              phone: { type: Type.STRING },
+              email: { type: Type.STRING },
+              facebookUrl: { type: Type.STRING },
+              tiktokHandle: { type: Type.STRING },
+              physicalAddress: { type: Type.STRING },
+              category: { type: Type.STRING },
+              dulNumber: { type: Type.STRING, description: "Official license or DUL number if found" },
+              evidence: { type: Type.STRING, description: "A short snippet or reason why this merchant was found" },
+              verificationReason: { type: Type.STRING, description: "Explanation of why this lead is verified" }
+            },
+            required: ['businessName', 'platform', 'url']
           }
         }
-      });
+      };
+
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config
+        });
+      } catch (toolError: any) {
+        console.warn("AI Search with Google Search tool failed, retrying without tool...", toolError.message);
+        // Fallback: Try without the googleSearch tool if it's causing issues
+        delete config.tools;
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config
+        });
+      }
 
       const text = response.text;
       if (!text) return [];
       
-      const merchants = JSON.parse(text);
+      const merchants = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
       return merchants.map((m: any) => ({
         ...m,
         whatsapp: m.phone,
@@ -138,8 +155,8 @@ export const geminiService = {
           sources: ["AI Search", m.platform]
         }
       }));
-    } catch (error) {
-      console.error("AI Search error:", error);
+    } catch (error: any) {
+      console.error("AI Search critical error:", error.message);
       return [];
     }
   },
@@ -184,6 +201,7 @@ export const geminiService = {
   },
 
   async updateLead(id: string, updates: any): Promise<void> {
+    if (!id) throw new Error("Lead ID is required for update");
     await fetch(`/api/leads/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

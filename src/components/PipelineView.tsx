@@ -35,8 +35,10 @@ export const PipelineView: React.FC = () => {
   }, [filter]);
 
   const handleStatusChange = async (id: string, newStatus: LeadStatus) => {
+    const lead = leads.find(l => l.id === id);
+    const updateId = lead?.leadId || id;
     try {
-      await geminiService.updateLead(id, { status: newStatus });
+      await geminiService.updateLead(updateId, { status: newStatus });
       setLeads(prev => prev.map(l => l.id === id ? { ...l, status: newStatus } : l));
     } catch (error) {
       console.error("Failed to update lead status:", error);
