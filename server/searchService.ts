@@ -1,5 +1,6 @@
 import { search } from 'duck-duck-scrape';
 import { chromium } from 'playwright';
+import { GoogleGenAI, Type } from "@google/genai";
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -323,7 +324,7 @@ async function googleSearchRaw(query: string): Promise<any[]> {
   }
 }
 
-async function playwrightDDGSearch(query: string, retries = 1): Promise<any[]> {
+async function playwrightDDGSearch(query: string, retries = 2): Promise<any[]> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     logger.info('executing_playwright_ddg_search', { query, attempt });
     let browser;
@@ -337,13 +338,21 @@ async function playwrightDDGSearch(query: string, retries = 1): Promise<any[]> {
         viewport: { width: 1280, height: 800 }
       });
       
+      // Apply stealth
+      /* 
+      try {
+        await stealth(context);
+      } catch (e) {
+        logger.warn('stealth_apply_failed', { error: e.message });
+      }
+      */
+
       const page = await context.newPage();
       
       // DuckDuckGo search URL
-      // Use 'commit' to be faster, then wait for selector
       await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&t=h_&ia=web`, {
         waitUntil: 'domcontentloaded',
-        timeout: 45000 // Increased timeout
+        timeout: 45000 
       });
 
       // Wait for results to appear
@@ -407,6 +416,93 @@ async function playwrightDDGSearch(query: string, retries = 1): Promise<any[]> {
   return [];
 }
 
+async function playwrightGoogleSearch(query: string, retries = 1): Promise<any[]> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let browser;
+    try {
+      browser = await chromium.launch({ 
+        headless: true,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-setuid-sandbox'
+        ]
+      });
+      const context = await browser.newContext({
+        userAgent: getRandomUserAgent(),
+        viewport: { width: 1280, height: 720 }
+      });
+      
+      try {
+        await stealth(context);
+      } catch (e) {}
+
+      const page = await context.newPage();
+      
+      // Go to Google
+      await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=15`, { 
+        waitUntil: 'domcontentloaded', 
+        timeout: 45000 
+      });
+
+      // Handle cookie consent if it appears
+      try {
+        const consentButton = await page.$('button:has-text("Accept all"), button:has-text("I agree"), button:has-text("قبول الكل")');
+        if (consentButton) {
+          await consentButton.click();
+          await page.waitForTimeout(1000);
+        }
+      } catch (e) {}
+
+      try {
+        await page.waitForSelector('#search, .g, #rso', { timeout: 15000 });
+      } catch (e) {
+        const isBlocked = await page.isVisible('text=unusual traffic') || await page.isVisible('text=Our systems have detected');
+        if (isBlocked) {
+          logger.warn('playwright_google_blocked', { query });
+          return [];
+        }
+      }
+
+      const results = await page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll('.g'));
+        return items.map(item => {
+          const titleEl = item.querySelector('h3');
+          const linkEl = item.querySelector('a');
+          const snippetEl = item.querySelector('.VwiC3b') || item.querySelector('.st');
+          
+          return {
+            title: titleEl?.textContent?.trim() || '',
+            url: linkEl?.getAttribute('href') || '',
+            description: snippetEl?.textContent?.trim() || ''
+          };
+        }).filter(r => r.url && r.url.startsWith('http') && r.title);
+      });
+
+      if (results.length > 0) {
+        logger.info('playwright_google_search_success', { query, count: results.length });
+        return results;
+      }
+      
+      if (attempt < retries) {
+        await sleep(2000);
+        continue;
+      }
+      return [];
+    } catch (error: any) {
+      logger.error('playwright_google_search_failed', { query, attempt, error: error.message });
+      if (attempt < retries) {
+        await sleep(3000);
+        continue;
+      }
+      return [];
+    } finally {
+      if (browser) await browser.close();
+    }
+  }
+  return [];
+}
+
 async function safeSearch(query: string, retries = 2): Promise<any[]> {
   for (let i = 0; i <= retries; i++) {
     try {
@@ -428,7 +524,11 @@ async function safeSearch(query: string, retries = 2): Promise<any[]> {
           const playwrightResults = await playwrightDDGSearch(query);
           if (playwrightResults.length > 0) return playwrightResults;
           
-          // If Playwright DDG also fails, try raw Google search
+          // If Playwright DDG also fails, try Playwright Google search
+          const playwrightGoogleResults = await playwrightGoogleSearch(query);
+          if (playwrightGoogleResults.length > 0) return playwrightGoogleResults;
+          
+          // Last ditch: raw Google search with axios
           const googleRawResults = await googleSearchRaw(query);
           if (googleRawResults.length > 0) return googleRawResults;
         }
@@ -437,6 +537,10 @@ async function safeSearch(query: string, retries = 2): Promise<any[]> {
         // Fallback to a simple Google search if DDG fails
         if (process.env.USE_GOOGLE_SCRAPING === 'true' || isVqdError) {
           try {
+            // Try Playwright Google first as it's more reliable
+            const pgResults = await playwrightGoogleSearch(query);
+            if (pgResults.length > 0) return pgResults;
+
             // Try the specific query first
             const directResults = await googleSearchRaw(query);
             if (directResults.length > 0) return directResults;
@@ -459,6 +563,101 @@ async function safeSearch(query: string, retries = 2): Promise<any[]> {
   return [];
 }
 
+/**
+ * Perform a targeted search for merchants using Gemini AI with Google Search tool.
+ */
+export async function aiSearchMerchants(params: any): Promise<any[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    logger.warn('AI search skipped: No GEMINI_API_KEY found');
+    return [];
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const prompt = `Perform a targeted search for ${Math.min(params.maxResults || 20, 30)} real, active merchants across ${params.location}. 
+  
+  Keywords: ${params.keywords}
+  
+  If keywords are broad, diversify across categories like Fashion, Tech, F&B, Services.
+  
+  Focus on VERIFIED leads with at least one valid contact method (Phone, WhatsApp, or Email).
+  
+  You are a Multi-Engine Orchestrator. Use internal knowledge and real-time search for UAE businesses NOT yet using advanced payment gateways.
+  
+  Provide:
+  1. Business Name
+  2. Platform (instagram, facebook, tiktok, website, github)
+  3. Direct URL
+  4. Contact details (phone, email, instagram handle)
+  5. Specific Category
+  6. DUL number if found
+  7. Verification Reason
+  
+  Only return real, currently active businesses in the UAE.`;
+
+  try {
+    const config: any = {
+      tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            businessName: { type: Type.STRING },
+            platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'github'] },
+            url: { type: Type.STRING },
+            instagramHandle: { type: Type.STRING },
+            githubUrl: { type: Type.STRING },
+            phone: { type: Type.STRING },
+            email: { type: Type.STRING },
+            facebookUrl: { type: Type.STRING },
+            tiktokHandle: { type: Type.STRING },
+            physicalAddress: { type: Type.STRING },
+            category: { type: Type.STRING },
+            dulNumber: { type: Type.STRING, description: "Official license or DUL number if found" },
+            evidence: { type: Type.STRING, description: "A short snippet or reason why this merchant was found" },
+            verificationReason: { type: Type.STRING, description: "Explanation of why this lead is verified" }
+          },
+          required: ['businessName', 'platform', 'url']
+        }
+      }
+    };
+
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config
+      });
+    } catch (toolError: any) {
+      logger.warn("AI Search with Google Search tool failed, retrying without tool...", { error: toolError.message });
+      delete config.tools;
+      response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config
+      });
+    }
+
+    const text = response.text;
+    if (!text) return [];
+    
+    const merchants = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
+    return merchants.map((m: any) => ({
+      ...m,
+      id: uuidv4(),
+      status: 'NEW',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+  } catch (error: any) {
+    logger.error("AI search failed", { error: error.message });
+    return [];
+  }
+}
+
 export async function huntMerchants(
   params: SearchParams, 
   onProgress?: (count: number, step?: string) => void
@@ -474,58 +673,42 @@ export async function huntMerchants(
     // Cross-source tracking: normalizedName → Set of variation types that found it
     const sourceMap = new Map<string, Set<string>>();
     
-    // We'll try up to 6 different query variations to get more results if needed
+    // We'll try up to 5 different query variations to get more results if needed
     const queryVariations = [
       { type: 'DDG', query: `${keywords} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com)` },
       { type: 'GOOGLE_MULTI', query: keywords },
-      { type: 'DDG', query: `${keywords} ${location} business directory` },
-      { type: 'GOOGLE', query: `${keywords} ${location} retailers` },
       { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` },
-      { type: 'AI_HUNT', query: `Find 10 ${keywords} in ${location} with their websites and social handles.` }
+      { type: 'AI_HUNT', query: `Find 10 ${keywords} in ${location} with their websites and social handles.` },
+      { type: 'DDG', query: `${keywords} ${location} business directory` }
     ];
 
     // Run search searches in parallel for speed, but stagger them to avoid rate limits
     const variationPromises = queryVariations.map(async (variation, index) => {
-      // Stagger the start of each variation by 2 seconds
-      await sleep(index * 2000);
+      // Stagger the start of each variation by 1 second
+      await sleep(index * 1000);
       
       logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
       
       try {
         let results = [];
         if (variation.type === 'AI_HUNT') {
-          const aiPrompt = `
-            Act as a lead generation expert for the UAE market.
-            Find 10 real, active ${keywords} in ${location}.
-            Return the results as a JSON array of objects with:
-            - businessName: string
-            - url: string (website or social profile)
-            - category: string
-            - description: string (brief snippet)
-            - platform: 'website' | 'instagram' | 'tiktok'
-          `;
-          const aiResponse = await chat([{ role: 'user', content: aiPrompt }], "You are a lead generation expert.");
-          try {
-            // Extract JSON from AI response
-            const jsonMatch = aiResponse.text.match(/\[[\s\S]*\]/);
-            if (jsonMatch) {
-              const aiMerchants = JSON.parse(jsonMatch[0]);
-              results = aiMerchants.map((m: any) => ({
-                title: m.businessName,
-                url: m.url,
-                description: m.description,
-                category: m.category,
-                platform: m.platform,
-                businessName: m.businessName
-              }));
-            }
-          } catch (e) {
-            logger.warn('ai_hunt_parse_failed', { error: e.message });
-          }
+          const aiMerchants = await aiSearchMerchants({ keywords, location, maxResults: 10 });
+          results = aiMerchants.map((m: any) => ({
+            title: m.businessName,
+            url: m.url,
+            description: m.evidence || m.verificationReason,
+            category: m.category,
+            platform: m.platform,
+            businessName: m.businessName,
+            phone: m.phone,
+            email: m.email,
+            instagramHandle: m.instagramHandle,
+            dulNumber: m.dulNumber
+          }));
         } else if (variation.type === 'INVEST_IN_DUBAI') {
           if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
-            const dubaiPromise = scrapeInvestInDubai(keywords, 15);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Invest in Dubai timeout")), 20000));
+            const dubaiPromise = scrapeInvestInDubai(keywords, 10);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Invest in Dubai timeout")), 15000));
             const dubaiResults = await Promise.race([dubaiPromise, timeoutPromise]) as any[] || [];
             results = (dubaiResults || []).map(r => ({
               title: r.businessName,
@@ -540,17 +723,6 @@ export async function huntMerchants(
         } else if (variation.type === 'GOOGLE_MULTI') {
           if (process.env.USE_GOOGLE_SCRAPING === 'true') {
             results = await googleSearch(variation.query, location) || [];
-          }
-        } else if (variation.type === 'GOOGLE') {
-          if (process.env.USE_GOOGLE_SCRAPING === 'true') {
-            const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
-            const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() }, timeout: 5000 });
-            const $ = cheerio.load(data);
-            results = $('.g').map((_, el) => ({
-              title: $(el).find('h3').first().text().trim(),
-              url: $(el).find('a').first().attr('href') || '',
-              description: $(el).find('.VwiC3b').text().trim()
-            })).get().filter(r => r.url.startsWith('http')) || [];
           }
         } else {
           results = await safeSearch(variation.query) || [];
@@ -597,7 +769,7 @@ export async function huntMerchants(
         const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
         const email = emailMatch ? emailMatch[1] : null;
 
-        const merchantData = {
+        const merchantData: any = {
           businessName,
           platform,
           url: result.url,
@@ -613,6 +785,21 @@ export async function huntMerchants(
           physicalAddress: null,
           isCOD: false,
         };
+
+        // Set baseline revenue and pricing immediately
+        const baselineRev = estimateRevenue(null, platform, merchantData.category);
+        merchantData.revenue = baselineRev;
+        merchantData.estimatedRevenue = baselineRev.monthly;
+        
+        const baselineRisk = { category: 'LOW', factors: [] }; // Assume low risk initially
+        const baselineOffer = calculateMyFatoorahOffer(merchantData, baselineRisk, baselineRev);
+        merchantData.pricing = {
+          setupFee: baselineOffer.setupFee,
+          transactionRate: baselineOffer.transactionRate,
+          settlementCycle: baselineOffer.settlementCycle,
+          offerReason: 'Initial baseline estimation'
+        };
+        merchantData.setupFee = baselineOffer.setupFee;
 
         // Track which source types found this merchant
         const normalKey = normalizeName(businessName);

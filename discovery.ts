@@ -64,7 +64,15 @@ export async function ingestMerchants(params: {
           return { enriched, isDuplicate, duplicateReason, existingId, normalizedName };
         } catch (err: any) {
           console.warn(`Failed to enrich merchant ${raw.businessName}:`, err.message);
-          // Fallback: use raw data if enrichment fails
+          
+          // Fallback: use raw data if enrichment fails, but still estimate revenue
+          const baselineRev = { 
+            monthly: raw.estimatedRevenue || 5000, 
+            annual: (raw.estimatedRevenue || 5000) * 12, 
+            confidence: 'LOW', 
+            basis: 'Fallback baseline' 
+          };
+          
           const fallback = { 
             ...raw, 
             confidenceScore: 0.1, 
@@ -74,9 +82,9 @@ export async function ingestMerchants(params: {
             reliabilityScore: 0,
             complianceScore: 0,
             riskAssessment: { score: 0, category: 'LOW', emoji: '✅', color: 'green', factors: [] },
-            revenue: { monthly: 0, annual: 0, confidence: 'LOW', basis: 'Fallback' },
+            revenue: baselineRev,
             pricing: { 
-              setupFee: 999, 
+              setupFee: raw.setupFee || 999, 
               transactionRate: '2.5% + 1.00 AED', 
               settlementCycle: 'T+2',
               offerReason: 'Standard fallback pricing'

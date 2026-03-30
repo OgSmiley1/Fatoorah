@@ -174,24 +174,51 @@ export const geminiService = {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to search merchants');
+        const errorText = await response.text();
+        if (errorText.includes('Service Unavailable')) {
+          throw new Error('The search engine is temporarily overloaded. Please try again in a few moments.');
+        }
+        throw new Error(`Search failed (${response.status}): ${errorText || response.statusText}`);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        console.error("Expected JSON but got:", text);
+        throw new Error("The server returned an unexpected response format. It might be temporarily unavailable.");
       }
 
       const result = await response.json();
-      return result.merchants;
-    } catch (error) {
+      return result;
+    } catch (error: any) {
       console.error("Search error:", error);
       throw error;
     }
   },
 
   async ingestMerchants(merchants: Merchant[], query: string, location: string): Promise<any> {
-    const response = await fetch('/api/merchants/ingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ merchants, query, location })
-    });
-    return response.json();
+    try {
+      const response = await fetch('/api/merchants/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merchants, query, location })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Ingestion failed (${response.status}): ${errorText}`);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Unexpected response from ingestion server.");
+      }
+
+      return response.json();
+    } catch (error: any) {
+      console.error("Ingestion error:", error);
+      throw error;
+    }
   },
 
   async getLeads(status?: string): Promise<any[]> {

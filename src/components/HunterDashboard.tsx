@@ -165,18 +165,58 @@ export const HunterDashboard: React.FC = () => {
       
       // Strategy 1 & 2: Run AI Search and Scraper Search in parallel
       console.log("Starting parallel search (AI + Scraper)...");
-      const [aiResults, scraperResults] = await Promise.all([
-        geminiService.aiSearchMerchants(searchParams).catch(err => {
-          console.error("AI Search failed:", err);
-          return [];
-        }),
-        geminiService.searchMerchants(searchParams).catch(err => {
-          console.error("Scraper Search failed:", err);
-          return [];
-        })
-      ]);
+      
+      // AI Search (Frontend)
+      const aiResultsPromise = geminiService.aiSearchMerchants(searchParams).catch(err => {
+        console.error("AI Search failed:", err);
+        return [];
+      });
 
-      allRawResults = [...aiResults, ...(scraperResults || [])];
+      // Scraper Search (Backend - now async)
+      const scraperResponse: any = await geminiService.searchMerchants(searchParams).catch(err => {
+        console.error("Scraper Search failed:", err);
+        return { runId: null, merchants: [] };
+      });
+
+      let scraperResults: Merchant[] = [];
+      
+      if (scraperResponse && scraperResponse.runId) {
+        console.log(`Search run started with ID: ${scraperResponse.runId}. Waiting for completion...`);
+        // Wait for hunt-completed event via WebSocket
+        scraperResults = await new Promise<Merchant[]>((resolve) => {
+          const timeout = setTimeout(() => {
+            console.warn("Search completion timeout");
+            resolve([]);
+          }, 60000); // 60s timeout
+
+          const onCompleted = (data: any) => {
+            if (data.runId === scraperResponse.runId) {
+              clearTimeout(timeout);
+              socketRef.current?.off('hunt-completed', onCompleted);
+              socketRef.current?.off('hunt-error', onError);
+              resolve(data.merchants || []);
+            }
+          };
+
+          const onError = (data: any) => {
+            if (data.runId === scraperResponse.runId) {
+              clearTimeout(timeout);
+              socketRef.current?.off('hunt-completed', onCompleted);
+              socketRef.current?.off('hunt-error', onError);
+              console.error("Background search error:", data.error);
+              resolve([]);
+            }
+          };
+
+          socketRef.current?.on('hunt-completed', onCompleted);
+          socketRef.current?.on('hunt-error', onError);
+        });
+      } else if (scraperResponse && scraperResponse.merchants) {
+        scraperResults = scraperResponse.merchants;
+      }
+
+      const aiResults = await aiResultsPromise;
+      allRawResults = [...aiResults, ...scraperResults];
       
       if (allRawResults.length === 0) {
         toast.error("No merchants found with either strategy.");

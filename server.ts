@@ -82,15 +82,24 @@ async function startServer() {
   // Discovery Search
   app.post("/api/search", async (req, res) => {
     const { keywords, location, maxResults } = req.body;
-    try {
-      const result = await huntMerchants(
-        { keywords, location, maxResults },
-        (count, step) => io.emit('hunt-progress', { query: keywords, count, step })
-      );
-      res.json(result);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
+    const runId = uuidv4();
+    
+    // Return runId immediately to prevent timeout
+    res.json({ runId, status: 'pending', message: 'Search started in background' });
+
+    // Start hunt in background
+    (async () => {
+      try {
+        const result = await huntMerchants(
+          { keywords, location, maxResults },
+          (count, step) => io.emit('hunt-progress', { query: keywords, count, step, runId })
+        );
+        io.emit('hunt-completed', { query: keywords, merchants: result.merchants, runId });
+      } catch (error: any) {
+        logger.error('background_search_failed', { runId, error: error.message });
+        io.emit('hunt-error', { query: keywords, error: error.message, runId });
+      }
+    })();
   });
 
   // Ingestion
