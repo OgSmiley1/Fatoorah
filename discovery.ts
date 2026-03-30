@@ -1,6 +1,7 @@
 import db from "./db.ts";
 import { v4 as uuidv4 } from "uuid";
 import { checkDuplicate, normalizeName } from "./server/dedupService.ts";
+import { logger } from "./server/logger.ts";
 import { 
   computeFitScore, 
   computeContactScore, 
@@ -55,12 +56,18 @@ export async function ingestMerchants(params: {
           if (igHandle) seenInRun.add(igHandle);
 
           // 1. Enrich & Score (Centralized) with a timeout to prevent hangs
-          const enrichmentPromise = enrichMerchantContacts(raw);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Enrichment timeout")), 45000)
-          );
+          let enriched = raw;
+          if (!raw.phone && !raw.email) {
+            const enrichmentPromise = enrichMerchantContacts(raw);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error("Enrichment timeout")), 45000)
+            );
+            
+            enriched = await Promise.race([enrichmentPromise, timeoutPromise]) as any;
+          } else {
+            logger.info('skipping_enrichment_has_contacts', { name: raw.businessName });
+          }
           
-          const enriched = await Promise.race([enrichmentPromise, timeoutPromise]) as any;
           return { enriched, isDuplicate, duplicateReason, existingId, normalizedName };
         } catch (err: any) {
           console.warn(`Failed to enrich merchant ${raw.businessName}:`, err.message);

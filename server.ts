@@ -92,7 +92,15 @@ async function startServer() {
       try {
         const result = await huntMerchants(
           { keywords, location, maxResults },
-          (count, step) => io.emit('hunt-progress', { query: keywords, count, step, runId })
+          (count, step, partialMerchants) => {
+            io.emit('hunt-progress', { 
+              query: keywords, 
+              count, 
+              step, 
+              runId,
+              merchants: partialMerchants 
+            });
+          }
         );
         io.emit('hunt-completed', { query: keywords, merchants: result.merchants, runId });
       } catch (error: any) {

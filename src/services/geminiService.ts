@@ -40,7 +40,9 @@ const updateLeadStatusTool: FunctionDeclaration = {
 export const geminiService = {
   async createWizardChat() {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY not found");
+    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10 || apiKey.startsWith("MY_GEMINI")) {
+      throw new Error("Invalid or placeholder GEMINI_API_KEY found. Please set a valid key in your settings.");
+    }
     
     const ai = new GoogleGenAI({ apiKey });
     return ai.chats.create({
@@ -68,8 +70,8 @@ export const geminiService = {
 
   async aiSearchMerchants(params: SearchParams): Promise<Merchant[]> {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn('AI search skipped: No GEMINI_API_KEY found');
+    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10 || apiKey.startsWith("MY_GEMINI")) {
+      console.warn('AI search skipped: Invalid or placeholder GEMINI_API_KEY found');
       return [];
     }
 

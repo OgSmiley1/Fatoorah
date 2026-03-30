@@ -83,6 +83,15 @@ export const HunterDashboard: React.FC = () => {
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
+  
+  const [apiKeyWarning, setApiKeyWarning] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key || key === "YOUR_GEMINI_API_KEY" || key.length < 10 || key.startsWith("MY_GEMINI")) {
+      setApiKeyWarning("GEMINI_API_KEY is missing or invalid. AI search features will be limited.");
+    }
+  }, []);
 
   const refreshStats = async () => {
     try {
@@ -127,6 +136,22 @@ export const HunterDashboard: React.FC = () => {
 
     socket.on('hunt-progress', (data: any) => {
       setSearchProgress(prev => ({ ...prev, ...data, status: 'searching' }));
+      
+      // If we have partial merchants, add them to the list
+      if (data.merchants && data.merchants.length > 0) {
+        setMerchants(prev => {
+          const newMerchants = [...prev];
+          data.merchants.forEach((m: Merchant) => {
+            if (!newMerchants.find(existing => 
+              (existing.id === m.id) || 
+              (existing.businessName === m.businessName && existing.url === m.url)
+            )) {
+              newMerchants.push(m);
+            }
+          });
+          return newMerchants;
+        });
+      }
     });
 
     socket.on('hunt-completed', (data: any) => {
@@ -167,7 +192,25 @@ export const HunterDashboard: React.FC = () => {
       console.log("Starting parallel search (AI + Scraper)...");
       
       // AI Search (Frontend)
-      const aiResultsPromise = geminiService.aiSearchMerchants(searchParams).catch(err => {
+      const aiResultsPromise = geminiService.aiSearchMerchants(searchParams).then(async (results) => {
+        if (results.length > 0) {
+          console.log(`AI found ${results.length} results. Ingesting...`);
+          const ingestResult = await geminiService.ingestMerchants(results, searchKeywords, params.location);
+          
+          // Update merchants list with AI results
+          setMerchants(prev => {
+            const newMerchants = [...prev];
+            ingestResult.merchants.forEach((m: Merchant) => {
+              if (!newMerchants.find(existing => existing.id === m.id)) {
+                newMerchants.push(m);
+              }
+            });
+            return newMerchants;
+          });
+          return ingestResult.merchants;
+        }
+        return [];
+      }).catch(err => {
         console.error("AI Search failed:", err);
         return [];
       });
@@ -187,13 +230,31 @@ export const HunterDashboard: React.FC = () => {
           const timeout = setTimeout(() => {
             console.warn("Search completion timeout");
             resolve([]);
-          }, 60000); // 60s timeout
+          }, 120000); // Increased timeout to 120s
 
           const onCompleted = (data: any) => {
             if (data.runId === scraperResponse.runId) {
               clearTimeout(timeout);
               socketRef.current?.off('hunt-completed', onCompleted);
               socketRef.current?.off('hunt-error', onError);
+              
+              // Update merchants list with final scraper results
+              setMerchants(prev => {
+                const newMerchants = [...prev];
+                (data.merchants || []).forEach((m: Merchant) => {
+                  const index = newMerchants.findIndex(existing => 
+                    (existing.id === m.id) || 
+                    (existing.businessName === m.businessName && existing.url === m.url)
+                  );
+                  if (index !== -1) {
+                    newMerchants[index] = m; // Replace with enriched version
+                  } else {
+                    newMerchants.push(m);
+                  }
+                });
+                return newMerchants;
+              });
+              
               resolve(data.merchants || []);
             }
           };
@@ -213,22 +274,12 @@ export const HunterDashboard: React.FC = () => {
         });
       } else if (scraperResponse && scraperResponse.merchants) {
         scraperResults = scraperResponse.merchants;
+        setMerchants(prev => [...prev, ...scraperResults]);
       }
 
-      const aiResults = await aiResultsPromise;
-      allRawResults = [...aiResults, ...scraperResults];
+      await aiResultsPromise;
       
-      if (allRawResults.length === 0) {
-        toast.error("No merchants found with either strategy.");
-        setLoading(false);
-        return;
-      }
-
-      console.log(`Found ${allRawResults.length} total raw results. Ingesting...`);
-      const ingestResult = await geminiService.ingestMerchants(allRawResults, searchKeywords, params.location);
-      finalResults = ingestResult.merchants;
-
-      setMerchants(finalResults);
+      // No need to call ingestMerchants again here as it's handled above
       
       // Save to history
       saveSearch({
@@ -236,7 +287,7 @@ export const HunterDashboard: React.FC = () => {
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
-        resultsCount: finalResults.length
+        resultsCount: merchants.length // Use current state length
       });
       
       refreshStats();
@@ -284,6 +335,24 @@ export const HunterDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
+      <AnimatePresence>
+        {apiKeyWarning && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden bg-amber-500/10 border-b border-amber-500/20"
+          >
+            <div className="max-w-[1600px] mx-auto px-6 py-2 flex items-center gap-3 text-amber-200 text-xs">
+              <Zap size={14} className="text-amber-500 shrink-0" />
+              <p>
+                <span className="font-bold uppercase text-[9px] bg-amber-500 text-black px-1.5 py-0.5 rounded mr-2">Warning</span>
+                {apiKeyWarning} Please set a valid key in the settings menu to enable full AI discovery.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-30">
         <div className="max-w-[1600px] mx-auto px-6 h-20 flex items-center justify-between">
