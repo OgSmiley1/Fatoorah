@@ -3,18 +3,26 @@ import { logger } from './logger';
 
 export async function scrapeInvestInDubai(query: string, maxResults: number = 20) {
   logger.info('invest_in_dubai_scrape_started', { query });
-  
-  const browser = await chromium.launch({ 
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+
+  // Verify Playwright browsers are installed before attempting launch.
+  // In environments like Cloud Run / Google AI Studio where `npx playwright install`
+  // was not run, this will silently return [] instead of crashing the hunt.
+  let browser: any;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+  } catch (launchErr: any) {
+    logger.warn('invest_in_dubai_playwright_unavailable', { error: launchErr.message });
+    return [];
+  }
   
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
-  
   const page = await context.newPage();
-  
+
   try {
     // Go to the directory page
     await page.goto('https://investindubai.gov.ae/en/business-directory', { 
@@ -67,6 +75,6 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
     logger.error('invest_in_dubai_scrape_failed', { query, error: error.message });
     return [];
   } finally {
-    await browser.close();
+    await browser?.close();
   }
 }

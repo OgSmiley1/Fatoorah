@@ -223,23 +223,29 @@ export async function enrichMerchantContacts(m: any) {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function safeSearch(query: string, retries = 3): Promise<any[]> {
+// Global DDG rate gate — DDG bans IPs that fire queries faster than ~1 per 6s
+let lastDDGCallAt = 0;
+async function ddgGate() {
+  const now = Date.now();
+  const wait = 6000 - (now - lastDDGCallAt);
+  if (wait > 0) await sleep(wait + Math.random() * 1000);
+  lastDDGCallAt = Date.now();
+}
+
+async function safeSearch(query: string, retries = 2): Promise<any[]> {
   for (let i = 0; i <= retries; i++) {
     try {
-      // Reduced initial delay for first attempt
-      const initialDelay = i === 0 ? 500 : 8000 * i;
-      await sleep(initialDelay + Math.random() * 2000);
-      
+      await ddgGate(); // enforce minimum spacing between all DDG calls
       const results = await search(query, { safeSearch: 0 });
       return results.results || [];
     } catch (error: any) {
       if (i === retries) {
-        logger.error('search_strategy_failed', { query, error: error.message });
+        logger.warn('search_strategy_failed', { query, error: error.message });
         return [];
       }
-      // Aggressive backoff: 15s, 30s, 45s...
-      const delay = 15000 * (i + 1) + Math.random() * 10000; 
-      logger.warn('search_retry', { query, attempt: i + 1, delay });
+      // Backoff: 20s, 40s
+      const delay = 20000 * (i + 1) + Math.random() * 5000;
+      logger.warn('search_retry', { query, attempt: i + 1, delay: Math.round(delay) });
       await sleep(delay);
     }
   }

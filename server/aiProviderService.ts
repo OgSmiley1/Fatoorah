@@ -26,7 +26,7 @@ export interface AIResponse {
   provider: AIProvider;
 }
 
-const GEMINI_MODEL = "gemini-2.0-flash-exp";
+const GEMINI_MODEL = "gemini-1.5-flash";        // stable, available on all API versions
 const GROK_MODEL   = "grok-3-fast";           // xAI Grok (api.x.ai)
 const GROQ_MODEL   = "llama-3.3-70b-versatile"; // Groq (api.groq.com) — last resort
 
