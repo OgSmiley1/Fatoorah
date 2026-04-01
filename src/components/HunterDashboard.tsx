@@ -8,13 +8,12 @@ import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
 import { geminiService } from '../services/geminiService';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
-import { exportMerchantsToExcel, exportVendorShortlist } from '../utils/exportExcel';
+import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
 import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
-import { toast, Toaster } from 'sonner';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -37,7 +36,7 @@ export const HunterDashboard: React.FC = () => {
       tiktok: true,
       website: true,
     },
-    maxResults: 50,
+    maxResults: 15,
   });
 
   const [subInput, setSubInput] = React.useState('');
@@ -72,7 +71,7 @@ export const HunterDashboard: React.FC = () => {
   };
 
   const [loading, setLoading] = React.useState(false);
-  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number, status?: string, step?: string } | null>(null);
+  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number } | null>(null);
   const [merchants, setMerchants] = React.useState<Merchant[]>([]);
   const [savedLeads, setSavedLeads] = React.useState<Merchant[]>([]);
   const [stats, setStats] = React.useState({ total: 0, leads: 0 });
@@ -83,15 +82,6 @@ export const HunterDashboard: React.FC = () => {
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
-  
-  const [apiKeyWarning, setApiKeyWarning] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key || key === "YOUR_GEMINI_API_KEY" || key.length < 10 || key.startsWith("MY_GEMINI")) {
-      setApiKeyWarning("GEMINI_API_KEY is missing or invalid. AI search features will be limited.");
-    }
-  }, []);
 
   const refreshStats = async () => {
     try {
@@ -113,45 +103,21 @@ export const HunterDashboard: React.FC = () => {
 
   // Socket.io initialization
   React.useEffect(() => {
-    const socket = io({
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    });
+    const socket = io();
     socketRef.current = socket;
 
     socket.on('connect', () => {
       console.log('Connected to server socket');
     });
 
-    socket.on('connect_error', (err) => {
-      console.warn('WebSocket connection error:', err.message);
-    });
-
     socket.on('hunt-started', (data: any) => {
       setLoading(true);
-      setSearchProgress({ query: data.query, count: 0, status: 'searching' });
+      setSearchProgress({ query: data.query, count: 0 });
       setParams(prev => ({ ...prev, keywords: data.query }));
     });
 
     socket.on('hunt-progress', (data: any) => {
-      setSearchProgress(prev => ({ ...prev, ...data, status: 'searching' }));
-      
-      // If we have partial merchants, add them to the list
-      if (data.merchants && data.merchants.length > 0) {
-        setMerchants(prev => {
-          const newMerchants = [...prev];
-          data.merchants.forEach((m: Merchant) => {
-            if (!newMerchants.find(existing => 
-              (existing.id === m.id) || 
-              (existing.businessName === m.businessName && existing.url === m.url)
-            )) {
-              newMerchants.push(m);
-            }
-          });
-          return newMerchants;
-        });
-      }
+      setSearchProgress(data);
     });
 
     socket.on('hunt-completed', (data: any) => {
@@ -162,13 +128,7 @@ export const HunterDashboard: React.FC = () => {
     });
 
     return () => {
-      if (socketRef.current) {
-        try {
-          socketRef.current.disconnect();
-        } catch (e) {
-          console.error('Error disconnecting socket:', e);
-        }
-      }
+      socket.disconnect();
     };
   }, []);
 
@@ -179,107 +139,34 @@ export const HunterDashboard: React.FC = () => {
     if (!searchKeywords) return;
     
     setLoading(true);
-    setMerchants([]); // Clear previous results to show it's working
     try {
       const searchParams = overrideKeywords 
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      let allRawResults: any[] = [];
-      let finalResults: Merchant[] = [];
+      let results: Merchant[] = [];
       
-      // Strategy 1 & 2: Run AI Search and Scraper Search in parallel
-      console.log("Starting parallel search (AI + Scraper)...");
+      // Strategy 1: Client-side AI Search (Resilient & Grounded)
+      console.log("Starting AI Search...");
+      const aiResults = await geminiService.aiSearchMerchants(searchParams);
       
-      // AI Search (Frontend)
-      const aiResultsPromise = geminiService.aiSearchMerchants(searchParams).then(async (results) => {
-        if (results.length > 0) {
-          console.log(`AI found ${results.length} results. Ingesting...`);
-          const ingestResult = await geminiService.ingestMerchants(results, searchKeywords, params.location);
-          
-          // Update merchants list with AI results
-          setMerchants(prev => {
-            const newMerchants = [...prev];
-            ingestResult.merchants.forEach((m: Merchant) => {
-              if (!newMerchants.find(existing => existing.id === m.id)) {
-                newMerchants.push(m);
-              }
-            });
-            return newMerchants;
-          });
-          return ingestResult.merchants;
-        }
-        return [];
-      }).catch(err => {
-        console.error("AI Search failed:", err);
-        return [];
-      });
-
-      // Scraper Search (Backend - now async)
-      const scraperResponse: any = await geminiService.searchMerchants(searchParams).catch(err => {
-        console.error("Scraper Search failed:", err);
-        return { runId: null, merchants: [] };
-      });
-
-      let scraperResults: Merchant[] = [];
-      
-      if (scraperResponse && scraperResponse.runId) {
-        console.log(`Search run started with ID: ${scraperResponse.runId}. Waiting for completion...`);
-        // Wait for hunt-completed event via WebSocket
-        scraperResults = await new Promise<Merchant[]>((resolve) => {
-          const timeout = setTimeout(() => {
-            console.warn("Search completion timeout");
-            resolve([]);
-          }, 120000); // Increased timeout to 120s
-
-          const onCompleted = (data: any) => {
-            if (data.runId === scraperResponse.runId) {
-              clearTimeout(timeout);
-              socketRef.current?.off('hunt-completed', onCompleted);
-              socketRef.current?.off('hunt-error', onError);
-              
-              // Update merchants list with final scraper results
-              setMerchants(prev => {
-                const newMerchants = [...prev];
-                (data.merchants || []).forEach((m: Merchant) => {
-                  const index = newMerchants.findIndex(existing => 
-                    (existing.id === m.id) || 
-                    (existing.businessName === m.businessName && existing.url === m.url)
-                  );
-                  if (index !== -1) {
-                    newMerchants[index] = m; // Replace with enriched version
-                  } else {
-                    newMerchants.push(m);
-                  }
-                });
-                return newMerchants;
-              });
-              
-              resolve(data.merchants || []);
-            }
-          };
-
-          const onError = (data: any) => {
-            if (data.runId === scraperResponse.runId) {
-              clearTimeout(timeout);
-              socketRef.current?.off('hunt-completed', onCompleted);
-              socketRef.current?.off('hunt-error', onError);
-              console.error("Background search error:", data.error);
-              resolve([]);
-            }
-          };
-
-          socketRef.current?.on('hunt-completed', onCompleted);
-          socketRef.current?.on('hunt-error', onError);
-        });
-      } else if (scraperResponse && scraperResponse.merchants) {
-        scraperResults = scraperResponse.merchants;
-        setMerchants(prev => [...prev, ...scraperResults]);
+      if (aiResults.length > 0) {
+        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
+        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        results = ingestResult.merchants;
       }
 
-      await aiResultsPromise;
-      
-      // No need to call ingestMerchants again here as it's handled above
+      // Strategy 2: Fallback to Server-side Scraper if AI found too few
+      if (results.length < (params.maxResults || 10) / 2) {
+        console.log("Falling back to server-side scraper...");
+        const scraperResults = await geminiService.searchMerchants(searchParams);
+        // Merge results, avoiding duplicates
+        const seenIds = new Set(results.map(r => r.id));
+        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
+        results = [...results, ...newScraperResults];
+      }
+
+      setMerchants(results);
       
       // Save to history
       saveSearch({
@@ -287,14 +174,14 @@ export const HunterDashboard: React.FC = () => {
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
-        resultsCount: merchants.length // Use current state length
+        resultsCount: results.length
       });
       
       refreshStats();
       
       if (socketRef.current) {
         socketRef.current.emit('hunt-finished', { 
-          merchants: finalResults, 
+          merchants: results, 
           query: searchKeywords 
         });
       }
@@ -311,10 +198,9 @@ export const HunterDashboard: React.FC = () => {
     handleSearchRef.current = handleSearch;
   }, [handleSearch]);
 
-  const handleUpdateLead = async (id: string, status: LeadStatus, leadId?: string) => {
+  const handleUpdateLead = async (id: string, status: LeadStatus) => {
     try {
-      const updateId = leadId || id;
-      await geminiService.updateLead(updateId, { status });
+      await geminiService.updateLead(id, { status });
       refreshStats();
     } catch (error) {
       console.error("Failed to update lead:", error);
@@ -322,7 +208,7 @@ export const HunterDashboard: React.FC = () => {
   };
 
   const handleSaveLead = async (merchant: Merchant) => {
-    handleUpdateLead(merchant.id, 'NEW', merchant.leadId);
+    handleUpdateLead(merchant.id, 'NEW');
   };
 
   const clearAllHistory = () => {
@@ -335,24 +221,6 @@ export const HunterDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
-      <AnimatePresence>
-        {apiKeyWarning && (
-          <motion.div 
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden bg-amber-500/10 border-b border-amber-500/20"
-          >
-            <div className="max-w-[1600px] mx-auto px-6 py-2 flex items-center gap-3 text-amber-200 text-xs">
-              <Zap size={14} className="text-amber-500 shrink-0" />
-              <p>
-                <span className="font-bold uppercase text-[9px] bg-amber-500 text-black px-1.5 py-0.5 rounded mr-2">Warning</span>
-                {apiKeyWarning} Please set a valid key in the settings menu to enable full AI discovery.
-              </p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-30">
         <div className="max-w-[1600px] mx-auto px-6 h-20 flex items-center justify-between">
@@ -387,23 +255,6 @@ export const HunterDashboard: React.FC = () => {
                 <p className="text-lg font-black text-emerald-400">{stats.leads}</p>
               </div>
             </div>
-            <button
-              onClick={() => {
-                window.open('/api/export-csv', '_blank');
-              }}
-              className="mission-control-button mission-control-button-secondary"
-            >
-              <Download size={18} />
-              <span className="hidden sm:inline">Download CSV</span>
-            </button>
-            <button
-              onClick={() => exportVendorShortlist(merchants.length > 0 ? merchants : savedLeads)}
-              disabled={merchants.length === 0 && savedLeads.length === 0}
-              className="mission-control-button mission-control-button-secondary"
-            >
-              <Shield size={18} />
-              <span className="hidden sm:inline">Vendor Shortlist</span>
-            </button>
             <button
               onClick={() => exportMerchantsToExcel(merchants.length > 0 ? merchants : savedLeads)}
               disabled={merchants.length === 0 && savedLeads.length === 0}
@@ -652,9 +503,9 @@ export const HunterDashboard: React.FC = () => {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
                 <AnimatePresence mode="popLayout">
-                  {merchants.map((merchant) => (
+                  {merchants.map((merchant, i) => (
                     <MerchantCard
-                      key={merchant.id}
+                      key={`${merchant.id}-${i}`}
                       merchant={merchant}
                       onSave={handleSaveLead}
                       isSaved={savedLeads.some(l => l.id === merchant.id)}

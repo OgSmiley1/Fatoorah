@@ -9,7 +9,7 @@ const searchMerchantsTool: FunctionDeclaration = {
     properties: {
       keywords: { type: Type.STRING, description: "Keywords to search for (e.g. 'Abayas', 'Perfumes')" },
       location: { type: Type.STRING, description: "Location to search in (e.g. 'Dubai', 'Abu Dhabi')" },
-      maxResults: { type: Type.NUMBER, description: "Maximum number of results to return (default 50)" }
+      maxResults: { type: Type.NUMBER, description: "Maximum number of results to return (default 15)" }
     },
     required: ["keywords", "location"]
   }
@@ -40,13 +40,11 @@ const updateLeadStatusTool: FunctionDeclaration = {
 export const geminiService = {
   async createWizardChat() {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10 || apiKey.startsWith("MY_GEMINI")) {
-      throw new Error("Invalid or placeholder GEMINI_API_KEY found. Please set a valid key in your settings.");
-    }
+    if (!apiKey) throw new Error("GEMINI_API_KEY not found");
     
     const ai = new GoogleGenAI({ apiKey });
     return ai.chats.create({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-pro-preview",
       config: {
         systemInstruction: `You are the "SMILEY WIZARD", the intelligent core of the MyFatoorah Acquisition Engine.
         You act as a Multi-Engine Orchestrator, leveraging Gemini, Web Intelligence, Server-side Scraping, and the official "Invest in Dubai" Business Directory to find merchants across the ENTIRE United Arab Emirates.
@@ -62,92 +60,85 @@ export const geminiService = {
         Be bold, efficient, and professional. Use emojis like 🧙‍♂️, ⚡, 📊, and 🎯.
         If a user asks to "find" or "hunt", use the search_merchants tool with broad UAE-wide parameters if they don't specify a city.
         
+        CRITICAL: When searching for merchants, you MUST perform a deep, Perplexity-style verification of their contact details. Cross-reference their official website, Instagram, and other social media to ensure the phone number and email are 100% accurate (e.g., LC Official's real number is +971 58 5172 434, and Chic Le Frique is +971 4 330 0110 or 800 253 392, not hallucinated ones).
+        
         Always explain what you are doing and mention that you are using "Multi-Engine Intelligence" to gather data.`,
-        tools: [{ functionDeclarations: [searchMerchantsTool, getStatsTool, updateLeadStatusTool] }]
+        tools: [
+          { functionDeclarations: [searchMerchantsTool, getStatsTool, updateLeadStatusTool] },
+          { googleSearch: {} }
+        ],
+        toolConfig: { includeServerSideToolInvocations: true } as any
       }
     });
   },
 
   async aiSearchMerchants(params: SearchParams): Promise<Merchant[]> {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10 || apiKey.startsWith("MY_GEMINI")) {
-      console.warn('AI search skipped: Invalid or placeholder GEMINI_API_KEY found');
+    if (!apiKey) {
+      console.warn('AI search skipped: No GEMINI_API_KEY found');
       return [];
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const prompt = `Perform a targeted search for ${Math.min(params.maxResults || 20, 30)} real, active merchants across ${params.location}. 
+    const prompt = `Perform a WIDE-NET search for ${params.maxResults || 15} real, active merchants across the ENTIRE ${params.location} matching "${params.keywords}". 
     
-    Keywords: ${params.keywords}
+    If keywords are broad (like "Businesses" or "SMEs"), you MUST diversify the results across at least 10 different categories (e.g., Fashion, Tech, F&B, Services, etc.).
     
-    If keywords are broad, diversify across categories like Fashion, Tech, F&B, Services.
+    CRITICAL: Focus on finding VERIFIED leads. A verified lead MUST have at least one valid contact method (Phone, WhatsApp, or Email).
     
-    Focus on VERIFIED leads with at least one valid contact method (Phone, WhatsApp, or Email).
+    VERY IMPORTANT FOR CONTACT NUMBERS: You MUST use the googleSearch tool to double-check and verify the contact numbers and emails by searching their official website or official social media pages. Do not guess or hallucinate phone numbers. For example, if searching for "LC Official", ensure you find their exact official contact number (e.g., +971 58 5172 434) and email (e.g., hello@lcofficial.com). If searching for "Chic Le Frique", ensure you find their exact official contact number (e.g., +971 4 330 0110 or 800 253 392) and email (e.g., info@chiclefrique.com) from their actual website or official channels. Use normal free search to cross-reference and verify.
     
-    You are a Multi-Engine Orchestrator. Use internal knowledge and real-time search for UAE businesses NOT yet using advanced payment gateways.
+    ORCHESTRATION MODE: You are acting as a Multi-Engine Orchestrator (Gemini + Web Intelligence). Use your internal knowledge and real-time search to find the most relevant local businesses in the UAE that are NOT yet using advanced payment gateways.
     
-    Provide:
-    1. Business Name
-    2. Platform (instagram, facebook, tiktok, website, github)
-    3. Direct URL
-    4. Contact details (phone, email, instagram handle)
-    5. Specific Category
-    6. DUL number if found
-    7. Verification Reason
+    For each merchant, provide:
+    1. Business Name (CRITICAL: This MUST be the actual Brand Name or Merchant Trading Name, not a generic description or LLC legal suffix unless used in marketing)
+    2. Primary Platform (instagram, facebook, tiktok, or website)
+    3. Direct URL to their profile or site
+    4. Official Website URL (if they have one, even if their primary platform is social media)
+    5. Contact details (phone, email, instagram handle) - MUST BE VERIFIED
+    6. Category: Be specific (e.g., "Handmade Jewelry", "Cloud Kitchen")
+    7. Verification Status: Explain why this lead is considered "verified" and where you found the contact info.
     
-    Only return real, currently active businesses in the UAE.`;
+    Only return real, currently active businesses in the UAE. Avoid international giants.`;
 
     try {
-      const config: any = {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              businessName: { type: Type.STRING },
-              platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'github'] },
-              url: { type: Type.STRING },
-              instagramHandle: { type: Type.STRING },
-              githubUrl: { type: Type.STRING },
-              phone: { type: Type.STRING },
-              email: { type: Type.STRING },
-              facebookUrl: { type: Type.STRING },
-              tiktokHandle: { type: Type.STRING },
-              physicalAddress: { type: Type.STRING },
-              category: { type: Type.STRING },
-              dulNumber: { type: Type.STRING, description: "Official license or DUL number if found" },
-              evidence: { type: Type.STRING, description: "A short snippet or reason why this merchant was found" },
-              verificationReason: { type: Type.STRING, description: "Explanation of why this lead is verified" }
-            },
-            required: ['businessName', 'platform', 'url']
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                businessName: { type: Type.STRING },
+                platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'github'] },
+                url: { type: Type.STRING },
+                instagramHandle: { type: Type.STRING },
+                githubUrl: { type: Type.STRING },
+                website: { type: Type.STRING, description: "Official website URL if they have one" },
+                phone: { type: Type.STRING },
+                email: { type: Type.STRING },
+                facebookUrl: { type: Type.STRING },
+                tiktokHandle: { type: Type.STRING },
+                physicalAddress: { type: Type.STRING },
+                category: { type: Type.STRING },
+                dulNumber: { type: Type.STRING, description: "Official license or DUL number if found" },
+                evidence: { type: Type.STRING, description: "A short snippet or reason why this merchant was found" },
+                verificationReason: { type: Type.STRING, description: "Explanation of why this lead is verified" }
+              },
+              required: ['businessName', 'platform', 'url']
+            }
           }
         }
-      };
-
-      let response;
-      try {
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config
-        });
-      } catch (toolError: any) {
-        console.warn("AI Search with Google Search tool failed, retrying without tool...", toolError.message);
-        // Fallback: Try without the googleSearch tool if it's causing issues
-        delete config.tools;
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config
-        });
-      }
+      });
 
       const text = response.text;
       if (!text) return [];
       
-      const merchants = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
+      const merchants = JSON.parse(text);
       return merchants.map((m: any) => ({
         ...m,
         whatsapp: m.phone,
@@ -157,8 +148,8 @@ export const geminiService = {
           sources: ["AI Search", m.platform]
         }
       }));
-    } catch (error: any) {
-      console.error("AI Search critical error:", error.message);
+    } catch (error) {
+      console.error("AI Search error:", error);
       return [];
     }
   },
@@ -176,51 +167,24 @@ export const geminiService = {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        if (errorText.includes('Service Unavailable')) {
-          throw new Error('The search engine is temporarily overloaded. Please try again in a few moments.');
-        }
-        throw new Error(`Search failed (${response.status}): ${errorText || response.statusText}`);
-      }
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        console.error("Expected JSON but got:", text);
-        throw new Error("The server returned an unexpected response format. It might be temporarily unavailable.");
+        throw new Error('Failed to search merchants');
       }
 
       const result = await response.json();
-      return result;
-    } catch (error: any) {
+      return result.merchants;
+    } catch (error) {
       console.error("Search error:", error);
       throw error;
     }
   },
 
   async ingestMerchants(merchants: Merchant[], query: string, location: string): Promise<any> {
-    try {
-      const response = await fetch('/api/merchants/ingest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ merchants, query, location })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Ingestion failed (${response.status}): ${errorText}`);
-      }
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        throw new Error("Unexpected response from ingestion server.");
-      }
-
-      return response.json();
-    } catch (error: any) {
-      console.error("Ingestion error:", error);
-      throw error;
-    }
+    const response = await fetch('/api/merchants/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ merchants, query, location })
+    });
+    return response.json();
   },
 
   async getLeads(status?: string): Promise<any[]> {
@@ -230,7 +194,6 @@ export const geminiService = {
   },
 
   async updateLead(id: string, updates: any): Promise<void> {
-    if (!id) throw new Error("Lead ID is required for update");
     await fetch(`/api/leads/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

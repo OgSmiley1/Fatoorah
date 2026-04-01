@@ -35,10 +35,8 @@ export const PipelineView: React.FC = () => {
   }, [filter]);
 
   const handleStatusChange = async (id: string, newStatus: LeadStatus) => {
-    const lead = leads.find(l => l.id === id);
-    const updateId = lead?.leadId || id;
     try {
-      await geminiService.updateLead(updateId, { status: newStatus });
+      await geminiService.updateLead(id, { status: newStatus });
       setLeads(prev => prev.map(l => l.id === id ? { ...l, status: newStatus } : l));
     } catch (error) {
       console.error("Failed to update lead status:", error);
@@ -96,9 +94,9 @@ export const PipelineView: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <AnimatePresence mode="popLayout">
-            {leads.map(lead => (
+            {leads.map((lead: any) => (
               <MerchantCard 
-                key={lead.id} 
+                key={lead.lead_id || lead.id} 
                 merchant={lead} 
                 showStatus 
                 onStatusChange={handleStatusChange}

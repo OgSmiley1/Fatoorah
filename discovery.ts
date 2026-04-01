@@ -1,16 +1,13 @@
-import db from "./db.ts";
+import db from "./db";
 import { v4 as uuidv4 } from "uuid";
-import { checkDuplicate, normalizeName } from "./server/dedupService.ts";
-import { logger } from "./server/logger.ts";
-import { 
-  computeFitScore, 
-  computeContactScore, 
-  computeConfidence,
-  computeRiskAssessment
-} from "./server/scoringService.ts";
-import { enrichMerchantContacts } from "./server/searchService.ts";
-import { IngestResult } from "./src/types.ts";
-import { toMerchantViewModel } from './server/presenters/merchantPresenter.ts';
+import { checkDuplicate, normalizeName } from "./server/dedupService";
+import { computeFitScore, computeContactScore, computeConfidence } from "./server/scoringService";
+import { enrichMerchantContacts } from "./server/searchService";
+
+export interface IngestResult {
+  merchants: any[];
+  runId: string;
+}
 
 export async function ingestMerchants(params: {
   merchants: any[];
@@ -30,155 +27,116 @@ export async function ingestMerchants(params: {
     // Track seen in current run to prevent duplicates within the same search
     const seenInRun = new Set<string>();
 
-    // Parallelize enrichment in chunks of 10 for better performance
-    const chunkSize = 10;
-    for (let i = 0; i < params.merchants.length; i += chunkSize) {
-      const chunk = params.merchants.slice(i, i + chunkSize);
-      const enrichedChunk = await Promise.all(chunk.map(async (raw) => {
-        try {
-          const normalizedName = normalizeName(raw.businessName);
-          const igHandle = (raw.instagramHandle || "").toLowerCase().trim();
-          
-          // Deduplication Logic
-          const dupCheck = checkDuplicate(raw);
-          let isDuplicate = dupCheck.isDuplicate;
-          let duplicateReason = dupCheck.reason;
-          let existingId = dupCheck.existingMerchantId;
+    // Enrich contacts from website directly if possible in parallel
+    const enrichedMerchants = await Promise.all(
+      params.merchants.map(raw => enrichMerchantContacts(raw))
+    );
 
-          // Check against current run
-          if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)))) {
-            isDuplicate = true;
-            duplicateReason = "Duplicate in current search run";
-          }
-
-          // Mark as seen
-          seenInRun.add(normalizedName);
-          if (igHandle) seenInRun.add(igHandle);
-
-          // 1. Enrich & Score (Centralized) with a timeout to prevent hangs
-          let enriched = raw;
-          if (!raw.phone && !raw.email) {
-            const enrichmentPromise = enrichMerchantContacts(raw);
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error("Enrichment timeout")), 45000)
-            );
-            
-            enriched = await Promise.race([enrichmentPromise, timeoutPromise]) as any;
-          } else {
-            logger.info('skipping_enrichment_has_contacts', { name: raw.businessName });
-          }
-          
-          return { enriched, isDuplicate, duplicateReason, existingId, normalizedName };
-        } catch (err: any) {
-          console.warn(`Failed to enrich merchant ${raw.businessName}:`, err.message);
-          
-          // Fallback: use raw data if enrichment fails, but still estimate revenue
-          const baselineRev = { 
-            monthly: raw.estimatedRevenue || 5000, 
-            annual: (raw.estimatedRevenue || 5000) * 12, 
-            confidence: 'LOW', 
-            basis: 'Fallback baseline' 
-          };
-          
-          const fallback = { 
-            ...raw, 
-            confidenceScore: 0.1, 
-            contactScore: 0.1, 
-            fitScore: 0.1,
-            qualityScore: 0,
-            reliabilityScore: 0,
-            complianceScore: 0,
-            riskAssessment: { score: 0, category: 'LOW', emoji: '✅', color: 'green', factors: [] },
-            revenue: baselineRev,
-            pricing: { 
-              setupFee: raw.setupFee || 999, 
-              transactionRate: '2.5% + 1.00 AED', 
-              settlementCycle: 'T+2',
-              offerReason: 'Standard fallback pricing'
-            },
-            evidence: [],
-            contactValidation: { status: 'UNVERIFIED', sources: [] },
-            scripts: { arabic: '', english: '', whatsapp: '', instagram: '' }
-          };
-          return { 
-            enriched: fallback, 
-            isDuplicate: false, 
-            duplicateReason: null, 
-            existingId: null, 
-            normalizedName: normalizeName(raw.businessName) 
-          };
-        }
-      }));
+    for (const raw of enrichedMerchants) {
+      const normalizedName = normalizeName(raw.businessName);
+      const igHandle = (raw.instagramHandle || "").toLowerCase().trim();
+      const githubUrl = (raw.githubUrl || "").toLowerCase().trim();
       
-      for (const { enriched, isDuplicate, duplicateReason, existingId, normalizedName } of enrichedChunk) {
-        const merchantId = isDuplicate ? existingId : uuidv4();
+      // Deduplication Logic
+      const dupCheck = checkDuplicate(raw);
+      let isDuplicate = dupCheck.isDuplicate;
+      let duplicateReason = dupCheck.reason;
+      let existingId = dupCheck.existingMerchantId;
+
+      // Check against current run
+      if (!isDuplicate && (seenInRun.has(normalizedName) || (igHandle && seenInRun.has(igHandle)) || (githubUrl && seenInRun.has(githubUrl)))) {
+        isDuplicate = true;
+        duplicateReason = "Duplicate in current search run";
+      }
+
+      // Mark as seen
+      seenInRun.add(normalizedName);
+      if (igHandle) seenInRun.add(igHandle);
+      if (githubUrl) seenInRun.add(githubUrl);
+
+      // Scoring Logic
+      const contactScore = computeContactScore(raw);
+      const fitScore = computeFitScore(raw.platform || 'website', 0);
+      const confidenceScore = computeConfidence(raw);
+      const risk = calculateRiskAssessment(raw);
+      const scripts = generateScripts(raw);
+
+      const merchantId = isDuplicate ? existingId : uuidv4();
+      
+      if (!isDuplicate) {
+        const metadata = {
+          risk,
+          scripts,
+          revenue: raw.revenue || { monthly: 0, annual: 0 },
+          pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
+          roi: raw.roi || { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
+          paymentMethods: raw.paymentMethods || [],
+          otherProfiles: raw.otherProfiles || [],
+          foundDate: raw.foundDate || new Date().toISOString(),
+          analyzedAt: new Date().toISOString()
+        };
+
+        db.prepare(`
+          INSERT INTO merchants (
+            id, business_name, normalized_name, source_platform, source_url, 
+            category, subcategory, country, city, website, phone, whatsapp, 
+            email, instagram_handle, github_url, dul_number, confidence_score, 
+            contactability_score, myfatoorah_fit_score, evidence_json, contact_validation_json, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          merchantId, raw.businessName, normalizedName, raw.platform, raw.url,
+          raw.category, raw.subcategory, params.location, raw.location, raw.website,
+          raw.phone, raw.whatsapp, raw.email, raw.instagramHandle, raw.githubUrl,
+          raw.dulNumber || null, confidenceScore, contactScore, fitScore, 
+          JSON.stringify(raw.evidence || []),
+          JSON.stringify(raw.contactValidation || { status: 'UNVERIFIED', sources: [] }),
+          JSON.stringify(metadata)
+        );
+
+        db.prepare(`
+          INSERT INTO leads (id, merchant_id, status, run_id)
+          VALUES (?, ?, ?, ?)
+        `).run(uuidv4(), merchantId, 'NEW', runId);
         
-        if (!isDuplicate) {
-          const riskAssessment = enriched.riskAssessment || computeRiskAssessment(enriched);
-          const contactValidation = enriched.contactValidation || { 
-            status: (enriched.phone || enriched.email) ? 'VERIFIED' : 'UNVERIFIED',
-            sources: ['Ingestion']
-          };
-
-          db.prepare(`
-            INSERT INTO merchants (
-              id, business_name, normalized_name, source_platform, source_url, 
-              category, subcategory, country, city, website, phone, whatsapp, 
-              email, instagram_handle, github_url, facebook_url, tiktok_handle,
-              twitter_handle, linkedin_url,
-              physical_address, dul_number, confidence_score, contactability_score, 
-              myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
-              risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
-              scripts_json, pricing_json, revenue_json, evidence_json, contact_validation_json, metadata_json,
-              followers, source_count, source_list
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            merchantId, enriched.businessName, normalizedName, enriched.platform, enriched.url,
-            enriched.category, enriched.subcategory, params.location, enriched.location, enriched.website,
-            enriched.phone, enriched.whatsapp || enriched.phone, enriched.email, enriched.instagramHandle, enriched.githubUrl,
-            enriched.facebookUrl, enriched.tiktokHandle, enriched.twitterHandle || null, enriched.linkedinUrl || null,
-            enriched.physicalAddress, enriched.dulNumber || null, 
-            enriched.confidenceScore || 0, enriched.contactScore || 0, enriched.fitScore || 0,
-            enriched.qualityScore || 0, enriched.reliabilityScore || 0, enriched.complianceScore || 0,
-            JSON.stringify(riskAssessment), enriched.revenue?.monthly || enriched.estimatedRevenue || 0, 
-            enriched.pricing?.setupFee || enriched.setupFee || 0,
-            enriched.paymentGateway || 'None detected', 
-            JSON.stringify(enriched.scripts || {}),
-            JSON.stringify(enriched.pricing || {}),
-            JSON.stringify(enriched.revenue || {}),
-            JSON.stringify(enriched.evidence || []),
-            JSON.stringify(contactValidation),
-            JSON.stringify({ isCOD: enriched.isCOD }),
-            enriched.followers || null,
-            1, JSON.stringify(['Ingestion'])
-          );
-
-          const leadId = uuidv4();
-          db.prepare(`
-            INSERT INTO leads (id, merchant_id, status, run_id)
-            VALUES (?, ?, ?, ?)
-          `).run(leadId, merchantId, 'NEW', runId);
-          
-          newLeadsCount++;
-          processedMerchants.push(toMerchantViewModel({ 
-            ...enriched, 
-            id: merchantId, 
-            leadId,
-            status: 'NEW',
-            risk: riskAssessment,
-            contactValidation
-          }));
-        } else {
-          db.prepare('INSERT INTO logs (level, event, details, run_id) VALUES (?, ?, ?, ?)')
-            .run('DEBUG', 'DUPLICATE_EXCLUDED', `Merchant: ${enriched.businessName}, Reason: ${duplicateReason}`, runId);
-          
-          processedMerchants.push(toMerchantViewModel({ 
-            ...enriched, 
-            id: merchantId || uuidv4(),
-            status: 'DUPLICATE', 
-            duplicateReason
-          }));
-        }
+        newLeadsCount++;
+        processedMerchants.push({ 
+          ...raw, 
+          id: merchantId, 
+          status: 'NEW', 
+          contactScore, 
+          fitScore, 
+          confidenceScore,
+          risk,
+          scripts,
+          revenue: raw.revenue || { monthly: 0, annual: 0 },
+          pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
+          roi: raw.roi || { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
+          contactValidation: raw.contactValidation || { status: 'UNVERIFIED', sources: [] },
+          paymentMethods: raw.paymentMethods || [],
+          otherProfiles: raw.otherProfiles || [],
+          foundDate: raw.foundDate || new Date().toISOString(),
+          analyzedAt: new Date().toISOString()
+        });
+      } else {
+        db.prepare('INSERT INTO logs (level, event, details, run_id) VALUES (?, ?, ?, ?)')
+          .run('DEBUG', 'DUPLICATE_EXCLUDED', `Merchant: ${raw.businessName}, Reason: ${duplicateReason}`, runId);
+        
+        processedMerchants.push({ 
+          ...raw, 
+          id: merchantId || uuidv4(), // Ensure unique ID even for duplicates
+          status: 'DUPLICATE', 
+          duplicateReason,
+          risk,
+          scripts,
+          revenue: raw.revenue || { monthly: 0, annual: 0 },
+          pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
+          roi: raw.roi || { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
+          contactValidation: raw.contactValidation || { status: 'UNVERIFIED', sources: [] },
+          paymentMethods: raw.paymentMethods || [],
+          otherProfiles: raw.otherProfiles || [],
+          foundDate: raw.foundDate || new Date().toISOString(),
+          analyzedAt: new Date().toISOString()
+        });
       }
     }
 
@@ -189,7 +147,7 @@ export async function ingestMerchants(params: {
     db.prepare('INSERT INTO logs (event, details, run_id) VALUES (?, ?, ?)')
       .run('INGESTION_COMPLETED', `Processed ${params.merchants.length} total, ${newLeadsCount} new leads.`, runId);
 
-    return { merchants: processedMerchants, runId, newLeadsCount };
+    return { merchants: processedMerchants, runId };
 
   } catch (error: any) {
     console.error("Ingestion Error:", error);
@@ -199,4 +157,44 @@ export async function ingestMerchants(params: {
       .run('ERROR', 'INGESTION_FAILED', error.message, runId);
     throw error;
   }
+}
+
+function calculateRiskAssessment(m: any) {
+  let score = 20;
+  const factors = ["New discovery"];
+  
+  if (!m.phone && !m.email) {
+    score += 40;
+    factors.push("Limited contact info");
+  }
+  
+  if (!m.website) {
+    score += 20;
+    factors.push("No official website");
+  }
+
+  let category: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+  let emoji = '🛡️';
+  let color = 'emerald';
+
+  if (score > 60) {
+    category = 'HIGH';
+    emoji = '⚠️';
+    color = 'rose';
+  } else if (score > 30) {
+    category = 'MEDIUM';
+    emoji = '⚖️';
+    color = 'amber';
+  }
+
+  return { score, category, emoji, color, factors };
+}
+
+function generateScripts(m: any) {
+  return {
+    arabic: `مرحباً ${m.businessName}، لاحظنا متجركم المميز ونود عرض حلول MyFatoorah لتسهيل الدفع لعملائكم.`,
+    english: `Hi ${m.businessName}, we love your products! MyFatoorah can help you accept online payments easily via WhatsApp and Instagram.`,
+    whatsapp: `Hello! I'm from MyFatoorah. We help businesses like ${m.businessName} accept payments online.`,
+    instagram: `Love your feed! Have you considered adding a direct payment link to your bio?`
+  };
 }
