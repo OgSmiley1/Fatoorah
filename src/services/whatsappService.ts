@@ -3,11 +3,13 @@ import { Merchant } from '../types';
 export const whatsappService = {
   async getStatus(): Promise<{ status: 'connected' | 'disconnected' | 'qr_pending'; qr?: string }> {
     const res = await fetch('/api/whatsapp/status');
+    if (!res.ok) throw new Error(`Failed to get WhatsApp status: ${res.statusText}`);
     return res.json();
   },
 
   async getUncontacted(): Promise<any[]> {
     const res = await fetch('/api/whatsapp/uncontacted');
+    if (!res.ok) throw new Error(`Failed to get uncontacted leads: ${res.statusText}`);
     return res.json();
   },
 

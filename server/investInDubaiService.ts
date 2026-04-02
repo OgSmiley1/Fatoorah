@@ -124,6 +124,7 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
     logger.error('invest_in_dubai_fatal_error', { query, error: error.message });
     return [];
   } finally {
-    await browser.close();
+    try { await context.close(); } catch { /* ignore */ }
+    try { await browser.close(); } catch { /* ignore */ }
   }
 }

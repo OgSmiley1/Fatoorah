@@ -184,32 +184,36 @@ export const geminiService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ merchants, query, location })
     });
+    if (!response.ok) throw new Error(`Failed to ingest merchants: ${response.statusText}`);
     return response.json();
   },
 
   async getLeads(status?: string): Promise<any[]> {
     const url = status ? `/api/leads?status=${status}` : '/api/leads';
     const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch leads: ${response.statusText}`);
     return response.json();
   },
 
   async updateLead(id: string, updates: any): Promise<void> {
-    await fetch(`/api/leads/${id}`, {
+    const response = await fetch(`/api/leads/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
+    if (!response.ok) throw new Error(`Failed to update lead: ${response.statusText}`);
   },
 
   async getStats(): Promise<any> {
     const response = await fetch('/api/stats');
+    if (!response.ok) throw new Error(`Failed to fetch stats: ${response.statusText}`);
     const data = await response.json();
     return {
-      totalMerchants: data.total_merchants.count,
-      totalLeads: data.total_leads.count,
-      newLeads: data.new_leads.count,
-      onboarded: data.onboarded.count,
-      recentRuns: data.recent_runs
+      totalMerchants: data?.total_merchants?.count ?? 0,
+      totalLeads: data?.total_leads?.count ?? 0,
+      newLeads: data?.new_leads?.count ?? 0,
+      onboarded: data?.onboarded?.count ?? 0,
+      recentRuns: data?.recent_runs ?? []
     };
   }
 };

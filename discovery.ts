@@ -60,7 +60,7 @@ export async function ingestMerchants(params: {
 
       // Scoring Logic
       const contactScore = computeContactScore(raw);
-      const fitScore = computeFitScore(raw.platform || 'website', raw.followers || 0);
+      const fitScore = computeFitScore(raw.platform || 'website', raw.followers ?? null);
       const confidenceScore = computeConfidence(raw);
       const risk = calculateRiskAssessment(raw);
       const scripts = generateScripts(raw);

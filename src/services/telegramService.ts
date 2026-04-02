@@ -18,8 +18,12 @@ export const telegramService = {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Telegram API Error:', errorData);
+        try {
+          const errorData = await response.json();
+          console.error('Telegram API Error:', errorData);
+        } catch {
+          console.error('Telegram API Error (HTTP', response.status + ')');
+        }
         return false;
       }
 

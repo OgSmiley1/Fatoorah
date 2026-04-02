@@ -94,6 +94,10 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
         body: JSON.stringify({ message: msg, history, systemPrompt: SYSTEM_PROMPT })
       });
 
+      if (!res.ok) {
+        addAssistantMessage('Server error. Make sure the backend is running.', 'none');
+        return;
+      }
       const data = await res.json();
       const responseText: string = data.response || 'No response received.';
       const provider: string = data.provider || 'none';
@@ -179,6 +183,10 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
         });
       } finally {
         clearTimeout(timeout);
+      }
+      if (!res.ok) {
+        addAssistantMessage('Agent unavailable — server returned an error. Check your configuration.', 'none');
+        return;
       }
       const data = await res.json();
 

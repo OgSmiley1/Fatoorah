@@ -17,14 +17,17 @@ export const PipelineView: React.FC = () => {
   const [leads, setLeads] = React.useState<Merchant[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [filter, setFilter] = React.useState<LeadStatus | 'ALL'>('ALL');
+  const [fetchError, setFetchError] = React.useState<string | null>(null);
 
   const fetchLeads = async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const data = await geminiService.getLeads(filter === 'ALL' ? undefined : filter);
       setLeads(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch leads:", error);
+      setFetchError(error.message || 'Failed to load leads');
     } finally {
       setLoading(false);
     }
@@ -85,6 +88,12 @@ export const PipelineView: React.FC = () => {
       {loading ? (
         <div className="h-64 flex items-center justify-center">
           <Loader2 className="animate-spin text-blue-500" size={40} />
+        </div>
+      ) : fetchError ? (
+        <div className="h-64 flex flex-col items-center justify-center text-center space-y-4 bg-red-500/5 rounded-3xl border border-dashed border-red-500/20">
+          <Filter size={40} className="text-red-700" />
+          <p className="text-red-400 font-bold text-xs uppercase tracking-widest">{fetchError}</p>
+          <button onClick={fetchLeads} className="text-xs text-slate-400 hover:text-white underline">Retry</button>
         </div>
       ) : leads.length === 0 ? (
         <div className="h-64 flex flex-col items-center justify-center text-center space-y-4 bg-slate-900/30 rounded-3xl border border-dashed border-slate-800">

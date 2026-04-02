@@ -123,7 +123,11 @@ export function initWhatsAppBot(
                 m.email ? `📧 ${m.email}` : null,
                 `⭐ Fit Score: ${m.fitScore || 0}/100`,
               ].filter(Boolean).join('\n');
-              if (waClient) await waClient.sendMessage(chatId, card);
+              try {
+                if (waClient) await waClient.sendMessage(chatId, card);
+              } catch (sendErr: any) {
+                console.error('[WhatsApp] Failed to send card:', sendErr.message);
+              }
               await new Promise(r => setTimeout(r, 800));
             }
             if (result.merchants.length > 5) {
