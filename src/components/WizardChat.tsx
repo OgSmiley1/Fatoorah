@@ -167,11 +167,19 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
     if (!isOpen) setIsOpen(true);
 
     try {
-      const res = await fetch('/api/ai-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command })
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      let res: Response;
+      try {
+        res = await fetch('/api/ai-agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command }),
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
       const data = await res.json();
 
       if (data.error) {
@@ -200,8 +208,11 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
       }
 
       addAssistantMessage(content || 'Analysis complete. No actionable leads found.', 'gemini');
-    } catch {
-      addAssistantMessage('Agent unavailable. Make sure GEMINI_API_KEY is set in .env', 'none');
+    } catch (err: any) {
+      const msg = err?.name === 'AbortError'
+        ? 'Agent timed out after 30s. The pipeline may be large — try again.'
+        : 'Agent unavailable. Make sure GEMINI_API_KEY is set in .env';
+      addAssistantMessage(msg, 'none');
     } finally {
       setLoading(false);
     }

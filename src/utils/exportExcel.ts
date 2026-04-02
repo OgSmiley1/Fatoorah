@@ -2,6 +2,8 @@ import * as XLSX from 'xlsx';
 import { Merchant } from '../types';
 
 export function exportMerchantsToExcel(merchants: Merchant[]) {
+  if (!merchants || merchants.length === 0) return;
+
   const data = merchants.map((m) => ({
     'Lead ID': m.leadId || 'N/A',
     'Business Name': m.businessName,
@@ -44,13 +46,15 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
 }
 
 export function exportVendorShortlist(merchants: Merchant[]) {
+  if (!merchants || merchants.length === 0) return;
+
   const data = merchants.filter(m => (m.qualityScore || 0) > 70).map((m) => ({
     'VENDOR NAME': m.businessName.toUpperCase(),
     'EVALUATION SCORE': `${m.qualityScore}%`,
     'RELIABILITY': `${m.reliabilityScore}%`,
     'COMPLIANCE': `${m.complianceScore}%`,
     'RISK LEVEL': m.risk?.category || 'LOW',
-    'EST. REVENUE': `AED ${m.revenue?.monthly?.toLocaleString()}`,
+    'EST. REVENUE': m.revenue?.monthly != null ? `AED ${m.revenue.monthly.toLocaleString()}` : 'Unknown',
     'CONTACT': m.phone || m.email || 'N/A',
     'PLATFORM': m.platform.toUpperCase(),
     'DUL NUMBER': m.dulNumber || 'NOT VERIFIED'

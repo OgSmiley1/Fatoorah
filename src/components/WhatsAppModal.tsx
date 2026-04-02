@@ -60,7 +60,11 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose })
     });
 
     return () => {
+      socket.off('wa-qr');
+      socket.off('wa-ready');
+      socket.off('wa-error');
       socket.disconnect();
+      socketRef.current = null;
     };
   }, [isOpen]);
 

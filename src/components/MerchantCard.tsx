@@ -144,7 +144,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers !== null ? merchant.followers.toLocaleString() : 'Not sourced'} followers
+                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers != null ? merchant.followers.toLocaleString() : 'Not sourced'} followers
               </span>
               {merchant.dulNumber && (
                 <>
@@ -245,7 +245,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               <TrendingUp size={10} /> Est. Revenue
             </p>
             <p className="text-sm font-bold text-slate-100">
-              {merchant.revenue?.monthly !== null ? `AED ${merchant.revenue.monthly.toLocaleString()}/mo` : 'Unknown'}
+              {merchant.revenue?.monthly != null ? `AED ${merchant.revenue.monthly.toLocaleString()}/mo` : 'Unknown'}
             </p>
             <p className="text-[9px] text-slate-500 uppercase">
               {merchant.revenue?.basis || 'Baseline Heuristic'}
@@ -258,8 +258,8 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             {merchant.risk?.category !== 'HIGH' ? (
               <>
                 <p className="text-sm font-bold text-emerald-400">
-                  {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : 
-                   merchant.pricing?.setupFee !== null ? `AED ${merchant.pricing.setupFee} SETUP` : 
+                  {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' :
+                   merchant.pricing?.setupFee != null ? `AED ${merchant.pricing.setupFee} SETUP` :
                    'No offer computed'}
                 </p>
                 <p className="text-[9px] text-slate-500 uppercase">

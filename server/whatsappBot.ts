@@ -12,8 +12,10 @@ export function getWAStatus() {
 }
 
 export async function sendWAMessage(to: string, message: string) {
+  if (!to) throw new Error('Recipient phone number is required');
   if (!waClient || waStatus !== 'connected') throw new Error('WhatsApp not connected');
   const chatId = to.includes('@') ? to : `${to.replace(/[^0-9]/g, '')}@c.us`;
+  if (!chatId.replace('@c.us', '')) throw new Error('Invalid phone number');
   await waClient.sendMessage(chatId, message);
 }
 
@@ -133,55 +135,67 @@ export function initWhatsAppBot(
         }
 
       } else if (text === '/status') {
-        const total: any = db.prepare('SELECT COUNT(*) as c FROM merchants').get();
-        const newL: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='NEW'").get();
-        const contacted: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='CONTACTED'").get();
-        const qualified: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='QUALIFIED'").get();
-        const onboarded: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='ONBOARDED'").get();
-        await msg.reply(
-          `📊 *Pipeline Status*\n\n` +
-          `🗄 Total Merchants: ${total.c}\n` +
-          `🆕 New Leads: ${newL.c}\n` +
-          `📞 Contacted: ${contacted.c}\n` +
-          `✅ Qualified: ${qualified.c}\n` +
-          `🎉 Onboarded: ${onboarded.c}`
-        );
+        try {
+          const total: any = db.prepare('SELECT COUNT(*) as c FROM merchants').get();
+          const newL: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='NEW'").get();
+          const contacted: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='CONTACTED'").get();
+          const qualified: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='QUALIFIED'").get();
+          const onboarded: any = db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='ONBOARDED'").get();
+          await msg.reply(
+            `📊 *Pipeline Status*\n\n` +
+            `🗄 Total Merchants: ${total.c}\n` +
+            `🆕 New Leads: ${newL.c}\n` +
+            `📞 Contacted: ${contacted.c}\n` +
+            `✅ Qualified: ${qualified.c}\n` +
+            `🎉 Onboarded: ${onboarded.c}`
+          );
+        } catch (err: any) {
+          await msg.reply(`❌ Failed to fetch status: ${err.message}`);
+        }
 
       } else if (text === '/recent') {
-        const leads: any[] = db.prepare(`
-          SELECT m.business_name, m.phone, m.category, l.status, m.myfatoorah_fit_score
-          FROM leads l JOIN merchants m ON l.merchant_id = m.id
-          ORDER BY l.created_at DESC LIMIT 5
-        `).all();
-        if (leads.length === 0) {
-          await msg.reply('📭 No leads in database yet.');
-        } else {
-          const lines = leads
-            .map((l, i) => `${i + 1}. *${l.business_name}* (${l.status})\n   📂 ${l.category || 'N/A'} | ⭐ ${l.myfatoorah_fit_score || 0}/100`)
-            .join('\n\n');
-          await msg.reply(`🕒 *Recent Leads:*\n\n${lines}`);
+        try {
+          const leads: any[] = db.prepare(`
+            SELECT m.business_name, m.phone, m.category, l.status, m.myfatoorah_fit_score
+            FROM leads l JOIN merchants m ON l.merchant_id = m.id
+            ORDER BY l.created_at DESC LIMIT 5
+          `).all();
+          if (leads.length === 0) {
+            await msg.reply('📭 No leads in database yet.');
+          } else {
+            const lines = leads
+              .map((l, i) => `${i + 1}. *${l.business_name}* (${l.status})\n   📂 ${l.category || 'N/A'} | ⭐ ${l.myfatoorah_fit_score || 0}/100`)
+              .join('\n\n');
+            await msg.reply(`🕒 *Recent Leads:*\n\n${lines}`);
+          }
+        } catch (err: any) {
+          await msg.reply(`❌ Failed to fetch recent leads: ${err.message}`);
         }
 
       } else if (text.startsWith('/export')) {
-        const status = text.replace('/export', '').trim().toUpperCase() || 'NEW';
-        const leads: any[] = db.prepare(`
-          SELECT m.business_name, m.category, m.phone, m.whatsapp, m.email, m.myfatoorah_fit_score
-          FROM leads l JOIN merchants m ON l.merchant_id = m.id
-          WHERE l.status = ? ORDER BY l.created_at DESC
-        `).all(status);
-        if (leads.length === 0) {
-          await msg.reply(`⚠️ No leads with status "${status}".`);
-        } else {
-          const lines = leads.map(l =>
-            `• *${l.business_name}*\n  📞 ${l.phone || 'N/A'} | 📧 ${l.email || 'N/A'}`
-          );
-          // Send in chunks of 15 to avoid message size limits
-          for (let i = 0; i < lines.length; i += 15) {
-            const chunk = lines.slice(i, i + 15).join('\n\n');
-            const header = i === 0 ? `📋 *Leads (${status}) — ${leads.length} total:*\n\n` : '';
-            if (waClient) await waClient.sendMessage(chatId, header + chunk);
-            if (i + 15 < lines.length) await new Promise(r => setTimeout(r, 1000));
+        try {
+          const status = text.replace('/export', '').trim().toUpperCase() || 'NEW';
+          const leads: any[] = db.prepare(`
+            SELECT m.business_name, m.category, m.phone, m.whatsapp, m.email, m.myfatoorah_fit_score
+            FROM leads l JOIN merchants m ON l.merchant_id = m.id
+            WHERE l.status = ? ORDER BY l.created_at DESC
+          `).all(status);
+          if (leads.length === 0) {
+            await msg.reply(`⚠️ No leads with status "${status}".`);
+          } else {
+            const lines = leads.map(l =>
+              `• *${l.business_name}*\n  📞 ${l.phone || 'N/A'} | 📧 ${l.email || 'N/A'}`
+            );
+            // Send in chunks of 15 to avoid message size limits
+            for (let i = 0; i < lines.length; i += 15) {
+              const chunk = lines.slice(i, i + 15).join('\n\n');
+              const header = i === 0 ? `📋 *Leads (${status}) — ${leads.length} total:*\n\n` : '';
+              if (waClient) await waClient.sendMessage(chatId, header + chunk);
+              if (i + 15 < lines.length) await new Promise(r => setTimeout(r, 1000));
+            }
           }
+        } catch (err: any) {
+          await msg.reply(`❌ Export failed: ${err.message}`);
         }
 
       } else if (text === '/start' || text === '/help') {

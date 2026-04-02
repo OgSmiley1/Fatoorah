@@ -51,7 +51,7 @@ export const telegramService = {
 🏢 *${m.businessName}*
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-👥 Followers: ${m.followers !== null ? m.followers.toLocaleString() : 'Unknown'}
+👥 Followers: ${m.followers != null ? m.followers.toLocaleString() : 'Unknown'}
 📍 Location: ${m.location}
 
 🎯 *QUALIFICATION:*
@@ -63,7 +63,7 @@ export const telegramService = {
 
 💬 *OUTREACH SCRIPT (EN):*
 \`\`\`
-${m.scripts.english}
+${m.scripts?.english ?? 'No script available.'}
 \`\`\`
 
 🔗 [View Profile](${m.url})

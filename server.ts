@@ -7,9 +7,11 @@ import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
-import { computeFitScore } from "./server/scoringService";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
 async function startServer() {
@@ -17,13 +19,15 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
+  const isProd = process.env.NODE_ENV === 'production';
+
   app.use(session({
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: true,
-      sameSite: 'none',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000
     }
@@ -31,7 +35,7 @@ async function startServer() {
 
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: { origin: process.env.ALLOWED_ORIGIN || '*', methods: ["GET", "POST"] }
   });
 
   const huntRequests = new Map<string, number>();
@@ -66,7 +70,7 @@ async function startServer() {
     });
   });
 
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
   // --- API ROUTES ---
 
@@ -100,7 +104,7 @@ async function startServer() {
 
   // Leads Management
   app.get("/api/leads", (req, res) => {
-    const { status } = req.query;
+    const { status, limit = '500', offset = '0' } = req.query;
     let query = `
       SELECT l.*, m.*, l.id as lead_id
       FROM leads l
@@ -113,7 +117,7 @@ async function startServer() {
       params.push(status);
     }
 
-    query += " ORDER BY l.created_at DESC";
+    query += ` ORDER BY l.created_at DESC LIMIT ${parseInt(limit as string, 10) || 500} OFFSET ${parseInt(offset as string, 10) || 0}`;
 
     const leads = db.prepare(query).all(...params) as any[];
     const processedLeads = leads.map(l => {
@@ -437,8 +441,13 @@ Respond as JSON: {
     const errors: string[] = [];
 
     for (const lead of leads) {
+      const recipient = lead.whatsapp || lead.phone;
+      if (!recipient) {
+        errors.push(`${lead.business_name}: No phone number available`);
+        continue;
+      }
       try {
-        await sendWAMessage(lead.whatsapp || lead.phone, defaultMsg);
+        await sendWAMessage(recipient, defaultMsg);
         // Mark as contacted
         db.prepare("UPDATE leads SET status='CONTACTED', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(lead.lead_id);
         sent++;
@@ -502,7 +511,7 @@ Respond as JSON: {
 🏢 *${m.businessName}*
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${computeFitScore(m.platform, 0)}/100
+⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
 🔗 [View Source](${m.url})
@@ -589,6 +598,9 @@ Respond as JSON: {
       }
     } catch (error) {
       console.error("[Telegram] Polling error:", error);
+      // Back off for 10s on error to avoid hammering the API on persistent failures
+      setTimeout(pollTelegram, 10000);
+      return;
     }
     setTimeout(pollTelegram, 1000);
   }
@@ -629,15 +641,16 @@ Respond as JSON: {
 
   // --- VITE / STATIC SERVING ---
 
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProd) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => res.sendFile("dist/index.html", { root: "." }));
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
