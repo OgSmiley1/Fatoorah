@@ -8,9 +8,7 @@ import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
 import db from "./db";
-import { v4 as uuidv4 } from "uuid";
 import { huntMerchants } from "./server/searchService";
-import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
