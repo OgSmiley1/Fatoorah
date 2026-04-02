@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -7,16 +8,15 @@ import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
 import db from "./db";
-import { v4 as uuidv4 } from "uuid";
 import { huntMerchants } from "./server/searchService";
-import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
+import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
-  
+
   app.use(session({
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
@@ -38,7 +38,7 @@ async function startServer() {
 
   io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
-    
+
     socket.on('hunt-finished', async (data: any) => {
       const { merchants, query } = data;
       const chatId = huntRequests.get(query);
@@ -78,7 +78,7 @@ async function startServer() {
     try {
       const result = await huntMerchants(
         { keywords, location, maxResults },
-        (count) => io.emit('hunt-progress', { query: keywords, count })
+        (count: number) => io.emit('hunt-progress', { query: keywords, count })
       );
       res.json(result);
     } catch (error: any) {
@@ -102,19 +102,19 @@ async function startServer() {
   app.get("/api/leads", (req, res) => {
     const { status } = req.query;
     let query = `
-      SELECT l.*, m.*, l.id as lead_id 
-      FROM leads l 
+      SELECT l.*, m.*, l.id as lead_id
+      FROM leads l
       JOIN merchants m ON l.merchant_id = m.id
     `;
     const params: any[] = [];
-    
+
     if (status) {
       query += " WHERE l.status = ?";
       params.push(status);
     }
-    
+
     query += " ORDER BY l.created_at DESC";
-    
+
     const leads = db.prepare(query).all(...params) as any[];
     const processedLeads = leads.map(l => {
       const metadata = l.metadata_json ? JSON.parse(l.metadata_json) : {};
@@ -147,23 +147,23 @@ async function startServer() {
   app.patch("/api/leads/:id", (req, res) => {
     const { id } = req.params;
     const { status, notes, next_action, follow_up_date, outcome } = req.body;
-    
+
     const updates: string[] = [];
     const params: any[] = [];
-    
+
     if (status) { updates.push("status = ?"); params.push(status); }
     if (notes !== undefined) { updates.push("notes = ?"); params.push(notes); }
     if (next_action !== undefined) { updates.push("next_action = ?"); params.push(next_action); }
     if (follow_up_date !== undefined) { updates.push("follow_up_date = ?"); params.push(follow_up_date); }
     if (outcome !== undefined) { updates.push("outcome = ?"); params.push(outcome); }
-    
+
     updates.push("updated_at = CURRENT_TIMESTAMP");
-    
+
     if (updates.length === 1) return res.status(400).json({ error: "No fields to update" });
-    
+
     const sql = `UPDATE leads SET ${updates.join(", ")} WHERE id = ?`;
     params.push(id);
-    
+
     db.prepare(sql).run(...params);
     res.json({ success: true });
   });
@@ -184,6 +184,271 @@ async function startServer() {
   app.get("/api/logs", (req, res) => {
     const logs = db.prepare("SELECT * FROM logs ORDER BY created_at DESC LIMIT 50").all();
     res.json(logs);
+  });
+
+  // --- AI CHAT (WizardChat) ---
+
+  app.post("/api/ai-chat", async (req, res) => {
+    const { message, history, systemPrompt } = req.body;
+    if (!message) return res.status(400).json({ error: "message required" });
+
+    // Try Gemini
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    if (geminiKey) {
+      try {
+        const { GoogleGenAI } = await import("@google/genai");
+        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const contents = [
+          ...(history || []).map((m: any) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+          })),
+          { role: 'user', parts: [{ text: message }] }
+        ];
+        const response = await ai.models.generateContent({
+          model: "gemini-2.0-flash",
+          contents,
+          config: systemPrompt ? { systemInstruction: systemPrompt } : {}
+        });
+        return res.json({ response: response.text, provider: 'gemini' });
+      } catch (e: any) {
+        console.warn('[ai-chat] Gemini failed:', e.message);
+      }
+    }
+
+    // Try Grok
+    const grokKey = process.env.GROK_API_KEY;
+    if (grokKey) {
+      try {
+        const messages = [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: message }
+        ];
+        const r = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${grokKey}` },
+          body: JSON.stringify({ model: 'grok-2-1212', messages, max_tokens: 1024 })
+        });
+        const data: any = await r.json();
+        return res.json({ response: data.choices[0].message.content, provider: 'grok' });
+      } catch (e: any) {
+        console.warn('[ai-chat] Grok failed:', e.message);
+      }
+    }
+
+    // Try Groq
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey) {
+      try {
+        const messages = [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: message }
+        ];
+        const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
+          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 1024 })
+        });
+        const data: any = await r.json();
+        return res.json({ response: data.choices[0].message.content, provider: 'groq' });
+      } catch (e: any) {
+        console.warn('[ai-chat] Groq failed:', e.message);
+      }
+    }
+
+    res.status(503).json({
+      response: "No AI provider is available. Set GEMINI_API_KEY, GROK_API_KEY, or GROQ_API_KEY in your .env file.",
+      provider: 'none'
+    });
+  });
+
+  // --- AI AGENT (Autonomous actions) ---
+
+  app.post("/api/ai-agent", async (req, res) => {
+    const { command } = req.body;
+
+    // Gather pipeline context from DB
+    const pipelineStats = {
+      total: (db.prepare("SELECT COUNT(*) as c FROM merchants").get() as any).c,
+      new_leads: (db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='NEW'").get() as any).c,
+      contacted: (db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='CONTACTED'").get() as any).c,
+      qualified: (db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='QUALIFIED'").get() as any).c,
+      onboarded: (db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='ONBOARDED'").get() as any).c,
+      follow_up: (db.prepare("SELECT COUNT(*) as c FROM leads WHERE status='FOLLOW_UP'").get() as any).c,
+    };
+
+    const hotLeads = db.prepare(`
+      SELECT l.id as lead_id, m.business_name, m.phone, m.whatsapp, m.email, m.category,
+             m.myfatoorah_fit_score as fit_score, m.confidence_score, m.physical_address
+      FROM leads l JOIN merchants m ON l.merchant_id = m.id
+      WHERE l.status = 'NEW'
+      ORDER BY m.myfatoorah_fit_score DESC LIMIT 10
+    `).all() as any[];
+
+    const coldLeads = db.prepare(`
+      SELECT l.id as lead_id, m.business_name, m.phone, m.whatsapp, m.email, m.category,
+             m.myfatoorah_fit_score as fit_score, l.follow_up_date, l.notes
+      FROM leads l JOIN merchants m ON l.merchant_id = m.id
+      WHERE l.status IN ('FOLLOW_UP', 'CONTACTED')
+      ORDER BY l.updated_at ASC LIMIT 10
+    `).all() as any[];
+
+    let prompt = '';
+    if (command === 'hot-leads') {
+      prompt = `You are a UAE sales expert for MyFatoorah payment gateway. Analyze these NEW leads and rank the top 5 by priority. For each, give: 1 line action recommendation + a WhatsApp outreach script in Arabic and English.
+
+Pipeline: ${JSON.stringify(pipelineStats)}
+Hot Leads: ${JSON.stringify(hotLeads)}
+
+Respond as JSON: { "brief": "2-sentence summary", "leads": [{ "lead_id": "", "name": "", "fit_score": 0, "action": "", "script_arabic": "", "script_english": "" }] }`;
+
+    } else if (command === 'cold-leads') {
+      prompt = `You are a UAE sales expert for MyFatoorah. These leads went cold or need follow-up. Suggest a re-engagement strategy for each.
+
+Pipeline: ${JSON.stringify(pipelineStats)}
+Cold/Follow-up Leads: ${JSON.stringify(coldLeads)}
+
+Respond as JSON: { "brief": "2-sentence summary", "leads": [{ "lead_id": "", "name": "", "action": "", "script_arabic": "", "script_english": "" }] }`;
+
+    } else if (command === 'audit') {
+      prompt = `You are a UAE sales manager reviewing the MyFatoorah acquisition pipeline. Give a strategic audit.
+
+Pipeline Stats: ${JSON.stringify(pipelineStats)}
+Top Hot Leads: ${JSON.stringify(hotLeads.slice(0, 5))}
+Stale Leads: ${JSON.stringify(coldLeads.slice(0, 5))}
+
+Respond as JSON: { "brief": "3-sentence executive summary", "health_score": 0-100, "recommendations": ["...", "...", "..."], "leads": [] }`;
+
+    } else { // autopilot
+      prompt = `You are the SMILEY WIZARD — autonomous sales AI for MyFatoorah UAE. Run a full pipeline audit and generate today's battle plan.
+
+Pipeline Stats: ${JSON.stringify(pipelineStats)}
+Top New Leads: ${JSON.stringify(hotLeads.slice(0, 5))}
+Stale/Follow-up Leads: ${JSON.stringify(coldLeads.slice(0, 5))}
+
+Respond as JSON: {
+  "brief": "3-sentence daily briefing",
+  "health_score": 0-100,
+  "recommendations": ["...", "..."],
+  "leads": [{ "lead_id": "", "name": "", "priority": "HOT|WARM|COLD", "action": "", "script_arabic": "", "script_english": "" }]
+}`;
+    }
+
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    if (!geminiKey) {
+      return res.status(503).json({ error: "No AI key available. Set GEMINI_API_KEY in .env" });
+    }
+
+    try {
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" }
+      });
+      const text = response.text || '{}';
+      const result = JSON.parse(text);
+      res.json({ ...result, command });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- BUSINESS CARD SCANNER ---
+
+  app.post("/api/scan-card", async (req, res) => {
+    const { image } = req.body;
+    if (!image) return res.status(400).json({ error: "image (base64) required" });
+
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    if (!geminiKey) return res.status(503).json({ error: "No Gemini API key available" });
+
+    try {
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+
+      // Strip data URL prefix if present
+      const base64Data = image.replace(/^data:image\/[a-z]+;base64,/, '');
+      const mimeType = image.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{
+          role: 'user',
+          parts: [
+            {
+              text: 'Extract business card information from this image. Return ONLY valid JSON with these fields: { "name": "", "company": "", "phone": "", "email": "", "address": "", "website": "", "title": "" }. If a field is not found, use empty string.'
+            },
+            {
+              inlineData: { mimeType, data: base64Data }
+            }
+          ]
+        }],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const text = response.text || '{}';
+      const cardData = JSON.parse(text);
+      res.json(cardData);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- WHATSAPP API ROUTES ---
+
+  app.get("/api/whatsapp/status", (req, res) => {
+    res.json(getWAStatus());
+  });
+
+  app.get("/api/whatsapp/uncontacted", (req, res) => {
+    const leads = db.prepare(`
+      SELECT l.id as lead_id, m.business_name, m.phone, m.whatsapp, m.email,
+             m.category, m.myfatoorah_fit_score as fit_score
+      FROM leads l JOIN merchants m ON l.merchant_id = m.id
+      WHERE l.status = 'NEW' AND m.whatsapp IS NOT NULL AND m.whatsapp != ''
+      ORDER BY m.myfatoorah_fit_score DESC
+    `).all();
+    res.json(leads);
+  });
+
+  app.post("/api/whatsapp/send-bulk", async (req, res) => {
+    const { message } = req.body;
+    const leads = db.prepare(`
+      SELECT l.id as lead_id, m.business_name, m.phone, m.whatsapp, m.email, m.category
+      FROM leads l JOIN merchants m ON l.merchant_id = m.id
+      WHERE l.status = 'NEW' AND m.whatsapp IS NOT NULL AND m.whatsapp != ''
+      ORDER BY m.myfatoorah_fit_score DESC LIMIT 50
+    `).all() as any[];
+
+    if (leads.length === 0) return res.json({ sent: 0, message: 'No uncontacted leads with WhatsApp numbers' });
+
+    const { status } = getWAStatus();
+    if (status !== 'connected') {
+      return res.status(503).json({ error: 'WhatsApp is not connected. Scan the QR code first.' });
+    }
+
+    const defaultMsg = message || '👋 Hello! We are MyFatoorah, the UAE\'s leading payment gateway. We\'d love to help your business accept payments easily and securely. Are you open to a quick chat? 🚀';
+
+    let sent = 0;
+    const errors: string[] = [];
+
+    for (const lead of leads) {
+      try {
+        await sendWAMessage(lead.whatsapp || lead.phone, defaultMsg);
+        // Mark as contacted
+        db.prepare("UPDATE leads SET status='CONTACTED', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(lead.lead_id);
+        sent++;
+        await new Promise(r => setTimeout(r, 800));
+      } catch (e: any) {
+        errors.push(`${lead.business_name}: ${e.message}`);
+      }
+    }
+
+    res.json({ sent, total: leads.length, errors });
   });
 
   // --- TELEGRAM BOT (SERVER-SIDE) ---
@@ -215,18 +480,17 @@ async function startServer() {
 
             await sendTelegram(chatId, `🧙‍♂️ SMILEY WIZARD: Starting server-side hunt for "${query}"...`);
             io.emit('hunt-started', { query });
-            
+
             try {
-              // Split query into keywords and location if possible, or just use as keywords
               const parts = query.split(' ');
               const location = parts.length > 1 ? parts.pop() : 'Dubai';
               const keywords = parts.join(' ');
-              
+
               const result = await huntMerchants(
                 { keywords, location: location || 'Dubai' },
-                (count) => io.emit('hunt-progress', { query, count })
+                (count: number) => io.emit('hunt-progress', { query, count })
               );
-              
+
               io.emit('hunt-completed', { query, merchants: result.merchants });
 
               if (result.newLeadsCount === 0) {
@@ -268,15 +532,15 @@ async function startServer() {
             await sendTelegram(chatId, `📊 Exporting ${leads.length} leads with status "${status}"...`);
 
             const headers = [
-              "Business Name", "Category", "Sub-Category", "Website", "IG Handle", 
+              "Business Name", "Category", "Sub-Category", "Website", "IG Handle",
               "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score"
             ];
-            
+
             const escapeCsv = (val: any) => {
               if (val === null || val === undefined) return "";
               const str = String(val);
-              return (str.includes(",") || str.includes("\"") || str.includes("\n")) 
-                ? `"${str.replace(/"/g, '""')}"` 
+              return (str.includes(",") || str.includes("\"") || str.includes("\n"))
+                ? `"${str.replace(/"/g, '""')}"`
                 : str;
             };
 
@@ -346,7 +610,7 @@ async function startServer() {
     const formData = new FormData();
     formData.append('chat_id', chatId.toString());
     formData.append('caption', caption);
-    
+
     const fileBuffer = fs.readFileSync(filePath);
     const blob = new Blob([fileBuffer], { type: 'text/csv' });
     formData.append('document', blob, path.basename(filePath));
@@ -358,6 +622,10 @@ async function startServer() {
   }
 
   pollTelegram();
+
+  // --- WHATSAPP BOT ---
+  const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
+  initWhatsAppBot(io, db, huntMerchants, waSessionPath);
 
   // --- VITE / STATIC SERVING ---
 

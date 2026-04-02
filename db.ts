@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const dbPath = path.join(process.cwd(), 'wizard.db');
+const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'wizard.db');
 
 function createDatabase() {
   try {

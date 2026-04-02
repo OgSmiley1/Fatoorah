@@ -1,8 +1,8 @@
 import React from 'react';
-import { 
-  Search, MapPin, Filter, Loader2, Download, Save, Shield, 
+import {
+  Search, MapPin, Filter, Loader2, Download, Save, Shield,
   Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send, Sparkles
+  X, TrendingUp, Send, Sparkles, MessageCircle, ScanLine
 } from 'lucide-react';
 import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
 import { geminiService } from '../services/geminiService';
@@ -10,6 +10,8 @@ import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
+import { WhatsAppModal } from './WhatsAppModal';
+import { CardScannerModal } from './CardScannerModal';
 import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
@@ -77,6 +79,8 @@ export const HunterDashboard: React.FC = () => {
   const [stats, setStats] = React.useState({ total: 0, leads: 0 });
   const [showFilters, setShowFilters] = React.useState(true);
   const [showTelegram, setShowTelegram] = React.useState(false);
+  const [showWhatsApp, setShowWhatsApp] = React.useState(false);
+  const [showCardScanner, setShowCardScanner] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const socketRef = React.useRef<Socket | null>(null);
@@ -244,6 +248,20 @@ export const HunterDashboard: React.FC = () => {
             >
               <Send size={18} />
               <span className="hidden sm:inline">Telegram Ops</span>
+            </button>
+            <button
+              onClick={() => setShowWhatsApp(true)}
+              className="mission-control-button mission-control-button-secondary"
+            >
+              <MessageCircle size={18} />
+              <span className="hidden sm:inline">WhatsApp</span>
+            </button>
+            <button
+              onClick={() => setShowCardScanner(true)}
+              className="mission-control-button mission-control-button-secondary"
+            >
+              <ScanLine size={18} />
+              <span className="hidden sm:inline">Scan Card</span>
             </button>
             <div className="hidden md:flex items-center gap-6 px-6 border-x border-slate-800">
               <div className="text-center">
@@ -566,14 +584,42 @@ export const HunterDashboard: React.FC = () => {
         </div>
       </footer>
 
-      <TelegramModal 
-        isOpen={showTelegram} 
+      <TelegramModal
+        isOpen={showTelegram}
         onClose={() => setShowTelegram(false)}
         merchants={merchants}
         savedLeads={savedLeads}
       />
 
-      <WizardChat 
+      <WhatsAppModal
+        isOpen={showWhatsApp}
+        onClose={() => setShowWhatsApp(false)}
+      />
+
+      <CardScannerModal
+        isOpen={showCardScanner}
+        onClose={() => setShowCardScanner(false)}
+        onSaveLead={(cardData) => {
+          // Ingest card data as a new merchant/lead
+          const merchant = {
+            businessName: cardData.company || cardData.name || 'Unknown',
+            platform: 'website' as const,
+            url: cardData.website || '',
+            website: cardData.website || '',
+            phone: cardData.phone || '',
+            whatsapp: cardData.phone || '',
+            email: cardData.email || '',
+            category: 'Business Card Scan',
+            physicalAddress: cardData.address || '',
+          };
+          geminiService.ingestMerchants([merchant as any], 'Business Card Scan', 'UAE').then(() => {
+            refreshStats();
+            setShowCardScanner(false);
+          });
+        }}
+      />
+
+      <WizardChat
         onSearch={(keywords, location) => {
           setParams(prev => ({ ...prev, keywords, location }));
           handleSearch(keywords);
