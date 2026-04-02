@@ -165,9 +165,9 @@ async function startServer() {
     if (follow_up_date !== undefined) { updates.push("follow_up_date = ?"); params.push(follow_up_date); }
     if (outcome !== undefined) { updates.push("outcome = ?"); params.push(outcome); }
 
-    updates.push("updated_at = CURRENT_TIMESTAMP");
+    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
 
-    if (updates.length === 1) return res.status(400).json({ error: "No fields to update" });
+    updates.push("updated_at = CURRENT_TIMESTAMP");
 
     const sql = `UPDATE leads SET ${updates.join(", ")} WHERE id = ?`;
     params.push(id);
