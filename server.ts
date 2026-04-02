@@ -12,7 +12,6 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
-import { computeFitScore } from "./server/scoringService";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
 async function startServer() {
@@ -512,7 +511,7 @@ Respond as JSON: {
 🏢 *${m.businessName}*
 📂 Category: ${m.category}
 📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${computeFitScore(m.platform, 0)}/100
+⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
 🔗 [View Source](${m.url})
@@ -599,6 +598,9 @@ Respond as JSON: {
       }
     } catch (error) {
       console.error("[Telegram] Polling error:", error);
+      // Back off for 10s on error to avoid hammering the API on persistent failures
+      setTimeout(pollTelegram, 10000);
+      return;
     }
     setTimeout(pollTelegram, 1000);
   }
