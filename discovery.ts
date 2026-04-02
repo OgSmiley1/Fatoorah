@@ -28,8 +28,12 @@ export async function ingestMerchants(params: {
     const seenInRun = new Set<string>();
 
     // Enrich contacts from website directly if possible in parallel
-    const enrichedMerchants = await Promise.all(
+    // Use allSettled so a single enrichment failure doesn't abort the entire batch
+    const enrichResults = await Promise.allSettled(
       params.merchants.map(raw => enrichMerchantContacts(raw))
+    );
+    const enrichedMerchants = enrichResults.map((r, i) =>
+      r.status === 'fulfilled' ? r.value : params.merchants[i]
     );
 
     for (const raw of enrichedMerchants) {
@@ -56,7 +60,7 @@ export async function ingestMerchants(params: {
 
       // Scoring Logic
       const contactScore = computeContactScore(raw);
-      const fitScore = computeFitScore(raw.platform || 'website', 0);
+      const fitScore = computeFitScore(raw.platform || 'website', raw.followers || 0);
       const confidenceScore = computeConfidence(raw);
       const risk = calculateRiskAssessment(raw);
       const scripts = generateScripts(raw);

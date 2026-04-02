@@ -105,7 +105,7 @@ async function startServer() {
 
   // Leads Management
   app.get("/api/leads", (req, res) => {
-    const { status } = req.query;
+    const { status, limit = '500', offset = '0' } = req.query;
     let query = `
       SELECT l.*, m.*, l.id as lead_id
       FROM leads l
@@ -118,7 +118,7 @@ async function startServer() {
       params.push(status);
     }
 
-    query += " ORDER BY l.created_at DESC";
+    query += ` ORDER BY l.created_at DESC LIMIT ${parseInt(limit as string, 10) || 500} OFFSET ${parseInt(offset as string, 10) || 0}`;
 
     const leads = db.prepare(query).all(...params) as any[];
     const processedLeads = leads.map(l => {
@@ -442,8 +442,13 @@ Respond as JSON: {
     const errors: string[] = [];
 
     for (const lead of leads) {
+      const recipient = lead.whatsapp || lead.phone;
+      if (!recipient) {
+        errors.push(`${lead.business_name}: No phone number available`);
+        continue;
+      }
       try {
-        await sendWAMessage(lead.whatsapp || lead.phone, defaultMsg);
+        await sendWAMessage(recipient, defaultMsg);
         // Mark as contacted
         db.prepare("UPDATE leads SET status='CONTACTED', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(lead.lead_id);
         sent++;

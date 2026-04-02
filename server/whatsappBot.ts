@@ -12,8 +12,10 @@ export function getWAStatus() {
 }
 
 export async function sendWAMessage(to: string, message: string) {
+  if (!to) throw new Error('Recipient phone number is required');
   if (!waClient || waStatus !== 'connected') throw new Error('WhatsApp not connected');
   const chatId = to.includes('@') ? to : `${to.replace(/[^0-9]/g, '')}@c.us`;
+  if (!chatId.replace('@c.us', '')) throw new Error('Invalid phone number');
   await waClient.sendMessage(chatId, message);
 }
 

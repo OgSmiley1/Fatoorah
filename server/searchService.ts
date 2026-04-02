@@ -302,7 +302,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         const phone = phoneMatch ? phoneMatch[0].replace(/[\s\-]/g, '') : null;
 
         const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const email = emailMatch ? emailMatch[1] : null;
+        const email = emailMatch ? emailMatch[0] : null;
 
         const merchantData = {
           businessName,
@@ -345,7 +345,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
       const dupCheck = checkDuplicate(m);
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
-        const fitScore = computeFitScore(m.platform, 0);
+        const fitScore = computeFitScore(m.platform, m.followers || 0);
         const contactScore = computeContactScore(m);
         const confidenceScore = computeConfidence(m);
         const contactValidation = m.contactValidation || {
