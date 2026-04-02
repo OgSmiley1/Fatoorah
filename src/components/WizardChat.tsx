@@ -1,5 +1,5 @@
 import React from 'react';
-import { Send, X, Loader2, Sparkles, Bot, ChevronDown, Zap, RefreshCw } from 'lucide-react';
+import { Send, X, Loader2, Sparkles, Bot, ChevronDown, Zap, RefreshCw, Flame, Snowflake, BarChart3, Rocket } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
@@ -153,6 +153,60 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
     }]);
   }
 
+  async function runAgentCommand(command: 'hot-leads' | 'cold-leads' | 'audit' | 'autopilot') {
+    if (loading) return;
+    const labels: Record<string, string> = {
+      'hot-leads': '🔥 Running Hot Leads analysis...',
+      'cold-leads': '🧊 Checking Cold Leads to re-engage...',
+      'audit': '📊 Running Pipeline Audit...',
+      'autopilot': '🚀 Running Full Auto-Pilot...'
+    };
+    const userMsg: Message = { role: 'user', content: labels[command], timestamp: Date.now() };
+    setMessages(prev => [...prev, userMsg]);
+    setLoading(true);
+    if (!isOpen) setIsOpen(true);
+
+    try {
+      const res = await fetch('/api/ai-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        addAssistantMessage(`❌ Agent error: ${data.error}`, 'none');
+        return;
+      }
+
+      let content = data.brief ? `**${data.brief}**\n\n` : '';
+
+      if (data.health_score != null) {
+        content += `**Pipeline Health Score: ${data.health_score}/100**\n\n`;
+      }
+
+      if (data.recommendations?.length) {
+        content += `**Recommendations:**\n${data.recommendations.map((r: string) => `• ${r}`).join('\n')}\n\n`;
+      }
+
+      if (data.leads?.length) {
+        content += `**Action List:**\n`;
+        data.leads.forEach((lead: any, i: number) => {
+          content += `\n**${i + 1}. ${lead.name}**${lead.priority ? ` (${lead.priority})` : ''}\n`;
+          content += `→ ${lead.action}\n`;
+          if (lead.script_english) content += `\n*English:* ${lead.script_english}\n`;
+          if (lead.script_arabic) content += `\n*Arabic:* ${lead.script_arabic}\n`;
+        });
+      }
+
+      addAssistantMessage(content || 'Analysis complete. No actionable leads found.', 'gemini');
+    } catch {
+      addAssistantMessage('Agent unavailable. Make sure GEMINI_API_KEY is set in .env', 'none');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <>
       {/* Floating toggle button */}
@@ -283,8 +337,43 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Agent action buttons */}
+            <div className="px-3 pt-2 pb-1 border-t border-white/5">
+              <p className="text-[9px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">Auto-Pilot Commands</p>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  onClick={() => runAgentCommand('hot-leads')}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 border border-orange-500/20 transition-all disabled:opacity-30"
+                >
+                  <Flame size={11} /> Hot Leads Today
+                </button>
+                <button
+                  onClick={() => runAgentCommand('cold-leads')}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 transition-all disabled:opacity-30"
+                >
+                  <Snowflake size={11} /> Re-engage Cold
+                </button>
+                <button
+                  onClick={() => runAgentCommand('audit')}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 transition-all disabled:opacity-30"
+                >
+                  <BarChart3 size={11} /> Pipeline Audit
+                </button>
+                <button
+                  onClick={() => runAgentCommand('autopilot')}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 text-[10px] px-2 py-1.5 rounded-lg bg-violet-500/10 text-violet-400 hover:bg-violet-500/20 border border-violet-500/20 transition-all disabled:opacity-30"
+                >
+                  <Rocket size={11} /> Run Auto-Pilot
+                </button>
+              </div>
+            </div>
+
             {/* Quick prompts */}
-            <div className="px-3 pt-2 pb-1 flex gap-1.5 flex-wrap border-t border-white/5">
+            <div className="px-3 pt-1 pb-1 flex gap-1.5 flex-wrap border-t border-white/5">
               {QUICK_PROMPTS.map(q => (
                 <button
                   key={q.label}

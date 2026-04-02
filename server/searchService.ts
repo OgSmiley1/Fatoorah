@@ -110,13 +110,13 @@ export async function enrichMerchantContacts(m: any) {
       websiteUrl = 'https://' + websiteUrl;
     }
     try {
-      const response = await axios.get(websiteUrl, { timeout: 10000, headers: { 'User-Agent': getRandomUserAgent() } });
+      const response = await axios.get(websiteUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
       const webContacts = await extractContactsFromHtml(response.data, websiteUrl);
       
       if (!webContacts.phone || !webContacts.email) {
         try {
           const contactUrl = new URL('/contact', websiteUrl).href;
-          const contactResponse = await axios.get(contactUrl, { timeout: 10000, headers: { 'User-Agent': getRandomUserAgent() } });
+          const contactResponse = await axios.get(contactUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
           const contactPageContacts = await extractContactsFromHtml(contactResponse.data, contactUrl);
           webContacts.phone = webContacts.phone || contactPageContacts.phone;
           webContacts.email = webContacts.email || contactPageContacts.email;
@@ -124,7 +124,7 @@ export async function enrichMerchantContacts(m: any) {
         } catch (e) {
           try {
             const contactUsUrl = new URL('/contact-us', websiteUrl).href;
-            const contactUsResponse = await axios.get(contactUsUrl, { timeout: 10000, headers: { 'User-Agent': getRandomUserAgent() } });
+            const contactUsResponse = await axios.get(contactUsUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
             const contactUsPageContacts = await extractContactsFromHtml(contactUsResponse.data, contactUsUrl);
             webContacts.phone = webContacts.phone || contactUsPageContacts.phone;
             webContacts.email = webContacts.email || contactUsPageContacts.email;
@@ -132,7 +132,7 @@ export async function enrichMerchantContacts(m: any) {
           } catch (e2) {
             try {
               const aboutUsUrl = new URL('/about-us', websiteUrl).href;
-              const aboutUsResponse = await axios.get(aboutUsUrl, { timeout: 10000, headers: { 'User-Agent': getRandomUserAgent() } });
+              const aboutUsResponse = await axios.get(aboutUsUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
               const aboutUsPageContacts = await extractContactsFromHtml(aboutUsResponse.data, aboutUsUrl);
               webContacts.phone = webContacts.phone || aboutUsPageContacts.phone;
               webContacts.email = webContacts.email || aboutUsPageContacts.email;
